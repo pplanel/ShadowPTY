@@ -63,6 +63,7 @@
             rust-analyzer
             clippy
             cargo
+            asciinema
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.apple-sdk_14
