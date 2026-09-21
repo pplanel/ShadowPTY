@@ -12,6 +12,7 @@ use vt100::Parser;
 
 use crate::formatter::format_screen;
 use crate::input::parse_input_keys;
+use crate::recorder::{AsciicastRecorder, SharedRecorder};
 
 /// Information about a running process session.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -29,6 +30,7 @@ pub struct PtyConfig<'a> {
     pub args: &'a [String],
     pub rows: u16,
     pub cols: u16,
+    pub record_path: Option<&'a str>,
 }
 
 impl<'a> PtyConfig<'a> {
@@ -39,7 +41,14 @@ impl<'a> PtyConfig<'a> {
             args,
             rows,
             cols,
+            record_path: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_record_path(mut self, record_path: Option<&'a str>) -> Self {
+        self.record_path = record_path;
+        self
     }
 }
 
@@ -50,6 +59,7 @@ pub struct TuiSession {
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub child: Box<dyn Child + Send + Sync>,
+    recorder: SharedRecorder,
     shutdown_flag: Arc<AtomicBool>,
     reader_handle: Option<JoinHandle<()>>,
 }
@@ -58,9 +68,15 @@ impl Drop for TuiSession {
     fn drop(&mut self) {
         self.shutdown_flag.store(true, Ordering::SeqCst);
         let _ = self.child.kill();
-        let _ = self.child.wait();
+        let exit_status = self.child.wait().ok();
         if let Some(handle) = self.reader_handle.take() {
             let _ = handle.join();
+        }
+        if let Ok(mut rec_guard) = self.recorder.lock() {
+            if let Some(rec) = rec_guard.as_mut() {
+                let code = exit_status.map_or(0, |status| i32::from(!status.success()));
+                let _ = rec.record_exit(code);
+            }
         }
     }
 }
@@ -122,13 +138,23 @@ impl PtyManager {
         )));
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-        // Background reader thread feeding bytes to vt100::Parser
+        let recorder = if let Some(path) = config.record_path {
+            let rec =
+                AsciicastRecorder::create(path, config.cols, config.rows, Some(config.command))
+                    .with_context(|| format!("failed to initialize recorder with path '{path}'"))?;
+            Arc::new(std::sync::Mutex::new(Some(rec)))
+        } else {
+            Arc::new(std::sync::Mutex::new(None))
+        };
+
+        // Background reader thread feeding bytes to vt100::Parser and recorder
         let reader_parser = Arc::clone(&parser);
         let reader_shutdown = Arc::clone(&shutdown_flag);
+        let reader_recorder = Arc::clone(&recorder);
         let reader_handle = thread::Builder::new()
             .name("shadowpty-reader".to_string())
             .spawn(move || {
-                run_pty_reader(reader, &reader_parser, &reader_shutdown);
+                run_pty_reader(reader, &reader_parser, &reader_recorder, &reader_shutdown);
             })
             .context("failed to spawn PTY reader thread")?;
 
@@ -145,6 +171,7 @@ impl PtyManager {
             writer,
             master,
             child,
+            recorder,
             shutdown_flag,
             reader_handle: Some(reader_handle),
         });
@@ -169,6 +196,13 @@ impl PtyManager {
             .writer
             .flush()
             .context("failed to flush PTY writer")?;
+
+        if let Ok(mut rec_guard) = session.recorder.lock() {
+            if let Some(rec) = rec_guard.as_mut() {
+                let _ = rec.record_input(&bytes);
+            }
+        }
+
         drop(session_lock);
 
         Ok(bytes.len())
@@ -199,6 +233,13 @@ impl PtyManager {
 
         session.info.rows = rows;
         session.info.cols = cols;
+
+        if let Ok(mut rec_guard) = session.recorder.lock() {
+            if let Some(rec) = rec_guard.as_mut() {
+                let _ = rec.record_resize(cols, rows);
+            }
+        }
+
         drop(session_lock);
 
         Ok((rows, cols))
@@ -233,6 +274,7 @@ impl PtyManager {
 fn run_pty_reader(
     mut reader: Box<dyn Read + Send>,
     parser: &Arc<std::sync::Mutex<Parser>>,
+    recorder: &SharedRecorder,
     shutdown_flag: &Arc<AtomicBool>,
 ) {
     let mut buffer = [0u8; 4096];
@@ -245,8 +287,14 @@ fn run_pty_reader(
                 break;
             }
             Ok(n) => {
+                let chunk = &buffer[..n];
                 if let Ok(mut locked_parser) = parser.lock() {
-                    locked_parser.process(&buffer[..n]);
+                    locked_parser.process(chunk);
+                }
+                if let Ok(mut rec_guard) = recorder.lock() {
+                    if let Some(rec) = rec_guard.as_mut() {
+                        let _ = rec.record_output(chunk);
+                    }
                 }
             }
             Err(e) => {

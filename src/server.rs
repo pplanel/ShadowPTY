@@ -22,6 +22,8 @@ pub struct TuiStartParams {
     pub rows: Option<u16>,
     /// Number of terminal columns (default 80).
     pub cols: Option<u16>,
+    /// Optional filesystem path where session will be recorded in asciicast v3 format.
+    pub record_path: Option<String>,
 }
 
 /// Parameters for `tui_input` tool.
@@ -58,7 +60,7 @@ impl ShadowPtyServer {
     /// Spawns a new process in a native pseudo-terminal (PTY) and initializes the screen buffer.
     #[tool(
         name = "tui_start",
-        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking."
+        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file."
     )]
     pub async fn tui_start(
         &self,
@@ -66,7 +68,8 @@ impl ShadowPtyServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let rows = params.rows.unwrap_or(24);
         let cols = params.cols.unwrap_or(80);
-        let config = crate::pty_manager::PtyConfig::new(&params.command, &params.args, rows, cols);
+        let config = crate::pty_manager::PtyConfig::new(&params.command, &params.args, rows, cols)
+            .with_record_path(params.record_path.as_deref());
 
         match self.manager.start_app(&config).await {
             Ok(info) => {
@@ -76,8 +79,12 @@ impl ShadowPtyServer {
                 let cmd = &info.command;
                 let rows = info.rows;
                 let cols = info.cols;
+                let recording_str = params
+                    .record_path
+                    .as_ref()
+                    .map_or_else(String::new, |path| format!(", recording to '{path}'"));
                 let msg = format!(
-                    "Started command '{cmd}' in PTY (pid: {pid_str}, rows: {rows}, cols: {cols})"
+                    "Started command '{cmd}' in PTY (pid: {pid_str}, rows: {rows}, cols: {cols}{recording_str})"
                 );
                 Ok(CallToolResult::success(vec![
                     rmcp::model::ContentBlock::text(msg),

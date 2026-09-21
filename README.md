@@ -33,12 +33,14 @@ Spawns a command inside a new pseudo-terminal session, tearing down any previous
   - `args` (*array of strings*, optional): Command-line arguments.
   - `rows` (*integer*, optional, default: 24): Initial terminal rows.
   - `cols` (*integer*, optional, default: 80): Initial terminal columns.
+  - `record_path` (*string*, optional): File path where session will be recorded in [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/) format (`.cast`).
 - **Example**:
   ```json
   {
     "command": "htop",
     "rows": 30,
-    "cols": 100
+    "cols": 100,
+    "record_path": "/tmp/htop-session.cast"
   }
   ```
 
