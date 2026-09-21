@@ -1,1 +1,7 @@
 /target
+.agents/
+skills-lock.json
+.DS_Store
+*.swp
+*.orig
+result

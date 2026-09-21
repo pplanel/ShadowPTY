@@ -1,40 +1,34 @@
-# Define a versão mínima do Rust (Edition 2024 foi estabilizada na 1.85+)
-# Isso permite que o Clippy sugira APIs mais novas e remova avisos obsoletos
+# Define minimum supported Rust version (Edition 2024 stabilized in 1.85+)
 msrv = "1.85.0"
 
-# --- Complexidade e Estrutura ---
+# --- Complexity & Structure ---
 
-# O padrão é 25. Baixar para 15 força você (e o agente) a extrair lógicas 
-# de parse e iteração do VT100 para funções menores e testáveis.
+# Cognitive complexity threshold for functions
 cognitive-complexity-threshold = 15
 
-# O padrão é 100. Impede métodos gigantescos no seu PtyManager.
+# Line threshold for methods
 too-many-lines-threshold = 80
 
-# O padrão é 7. Força o uso de structs para passar configurações em vez de 
-# dezenas de argumentos soltos nas funções.
+# Argument count threshold
 too-many-arguments-threshold = 4
 
-# --- Tipagem e Segurança ---
+# --- Types & Safety ---
 
-# Evita a "cegueira booleana" (ex: start_app(true, false, true)).
-# Se precisar de mais de um bool, o Clippy forçará a criação de um Enum explicativo.
+# Avoid boolean blindness
 max-fn-params-bools = 1
 
-# Permite o uso de unwrap()/expect() apenas dentro dos módulos de #[cfg(test)]
+# Allow unwrap() and expect() in unit/integration tests
 allow-unwrap-in-tests = true
 
-# Permite macros de debug como dbg! e print! apenas em testes.
-# Em produção (MCP operando via stdio), usar stdout quebra o protocolo JSON-RPC.
+# Allow debug printing in tests only
 allow-print-in-tests = true
 
-# --- Nomenclatura e Documentação ---
+# --- Naming & Documentation ---
 
-# Evita repetição redundante em enums (ex: PtyError::PtyReadError -> PtyError::Read)
 enum-variant-name-threshold = 3
 enum-variant-size-threshold = 256
 
-# Termos técnicos que o Clippy não deve reclamar ao verificar a ortografia da documentação
+# Technical terms recognized in documentation
 doc-valid-idents = [
   "PTY",
   "TUI",

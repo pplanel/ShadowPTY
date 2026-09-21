@@ -113,7 +113,10 @@ fn parse_token(token: &str, output: &mut Vec<u8>) -> bool {
 
 fn parse_modifier_token(token: &str, output: &mut Vec<u8>) -> bool {
     // CTRL+X or C-X
-    if let Some(rest) = token.strip_prefix("CTRL+").or_else(|| token.strip_prefix("C-")) {
+    if let Some(rest) = token
+        .strip_prefix("CTRL+")
+        .or_else(|| token.strip_prefix("C-"))
+    {
         if rest.len() == 1 {
             let ch = rest.chars().next().unwrap_or('\0');
             if ch.is_ascii_alphabetic() {

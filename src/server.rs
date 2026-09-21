@@ -76,8 +76,12 @@ impl ShadowPtyServer {
                 let cmd = &info.command;
                 let rows = info.rows;
                 let cols = info.cols;
-                let msg = format!("Started command '{cmd}' in PTY (pid: {pid_str}, rows: {rows}, cols: {cols})");
-                Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(msg)]))
+                let msg = format!(
+                    "Started command '{cmd}' in PTY (pid: {pid_str}, rows: {rows}, cols: {cols})"
+                );
+                Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text(msg),
+                ]))
             }
             Err(e) => Ok(CallToolResult::error(vec![
                 rmcp::model::ContentBlock::text(format!("Failed to start process: {e:#}")),
@@ -96,8 +100,13 @@ impl ShadowPtyServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.manager.send_input(&params.keys).await {
             Ok(bytes_written) => {
-                let msg = format!("Sent {} bytes to PTY for input {:?}", bytes_written, params.keys);
-                Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(msg)]))
+                let msg = format!(
+                    "Sent {} bytes to PTY for input {:?}",
+                    bytes_written, params.keys
+                );
+                Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text(msg),
+                ]))
             }
             Err(e) => Ok(CallToolResult::error(vec![
                 rmcp::model::ContentBlock::text(format!("Failed to send input: {e:#}")),
@@ -117,7 +126,9 @@ impl ShadowPtyServer {
         match self.manager.resize(params.rows, params.cols).await {
             Ok((rows, cols)) => {
                 let msg = format!("Resized terminal to {rows} rows x {cols} cols");
-                Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(msg)]))
+                Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text(msg),
+                ]))
             }
             Err(e) => Ok(CallToolResult::error(vec![
                 rmcp::model::ContentBlock::text(format!("Failed to resize terminal: {e:#}")),

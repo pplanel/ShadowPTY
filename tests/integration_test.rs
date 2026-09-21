@@ -34,8 +34,5 @@ async fn test_interactive_pty_session() {
     assert_eq!(cols, 100);
 
     // Send exit
-    manager
-        .send_input("exit<ENTER>")
-        .await
-        .expect("send exit");
+    manager.send_input("exit<ENTER>").await.expect("send exit");
 }

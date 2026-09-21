@@ -1,14 +1,12 @@
 //! PTY management and TUI screen state synchronization for ShadowPTY.
 
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
-use portable_pty::{
-    Child, CommandBuilder, MasterPty, PtyPair, PtySize, native_pty_system,
-};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtyPair, PtySize, native_pty_system};
 use tokio::sync::Mutex;
 use vt100::Parser;
 
@@ -117,7 +115,11 @@ impl PtyManager {
             .take_writer()
             .context("failed to take master PTY writer")?;
 
-        let parser = Arc::new(std::sync::Mutex::new(Parser::new(config.rows, config.cols, 0)));
+        let parser = Arc::new(std::sync::Mutex::new(Parser::new(
+            config.rows,
+            config.cols,
+            0,
+        )));
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
         // Background reader thread feeding bytes to vt100::Parser
