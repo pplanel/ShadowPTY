@@ -1,0 +1,43 @@
+[package]
+name = "termcp"
+version = "0.1.0"
+edition = "2024"
+description = "ShadowPTY - Headless TUI testing MCP server"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pplanel/termcp"
+readme = "AGENT.md"
+keywords = ["pty", "tui", "mcp", "terminal", "testing"]
+categories = ["command-line-utilities", "development-tools::testing"]
+
+[lints.rust]
+unsafe_code = "forbid"
+rust_2024_compatibility = { level = "warn", priority = -1 }
+
+[lints.clippy]
+# Ativa categorias rigorosas
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Regras essenciais para servidores MCP (onde panics derrubam o LLM)
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+# Desativa avisos do pedantic que são chatos demais para protótipos rápidos
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+multiple_crate_versions = "allow"
+unused_async_trait_impl = "allow"
+
+[dependencies]
+anyhow = "1.0.104"
+portable-pty = "0.9.0"
+rmcp = { version = "3.4.0", features = ["transport-io"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+vt100 = "0.16.2"

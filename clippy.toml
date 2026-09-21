@@ -1,0 +1,50 @@
+# Define a versão mínima do Rust (Edition 2024 foi estabilizada na 1.85+)
+# Isso permite que o Clippy sugira APIs mais novas e remova avisos obsoletos
+msrv = "1.85.0"
+
+# --- Complexidade e Estrutura ---
+
+# O padrão é 25. Baixar para 15 força você (e o agente) a extrair lógicas 
+# de parse e iteração do VT100 para funções menores e testáveis.
+cognitive-complexity-threshold = 15
+
+# O padrão é 100. Impede métodos gigantescos no seu PtyManager.
+too-many-lines-threshold = 80
+
+# O padrão é 7. Força o uso de structs para passar configurações em vez de 
+# dezenas de argumentos soltos nas funções.
+too-many-arguments-threshold = 4
+
+# --- Tipagem e Segurança ---
+
+# Evita a "cegueira booleana" (ex: start_app(true, false, true)).
+# Se precisar de mais de um bool, o Clippy forçará a criação de um Enum explicativo.
+max-fn-params-bools = 1
+
+# Permite o uso de unwrap()/expect() apenas dentro dos módulos de #[cfg(test)]
+allow-unwrap-in-tests = true
+
+# Permite macros de debug como dbg! e print! apenas em testes.
+# Em produção (MCP operando via stdio), usar stdout quebra o protocolo JSON-RPC.
+allow-print-in-tests = true
+
+# --- Nomenclatura e Documentação ---
+
+# Evita repetição redundante em enums (ex: PtyError::PtyReadError -> PtyError::Read)
+enum-variant-name-threshold = 3
+enum-variant-size-threshold = 256
+
+# Termos técnicos que o Clippy não deve reclamar ao verificar a ortografia da documentação
+doc-valid-idents = [
+  "PTY",
+  "TUI",
+  "MCP",
+  "VT100",
+  "ANSI",
+  "LLM",
+  "JSON-RPC",
+  "stdio",
+  "stderr",
+  "stdout",
+  "ShadowPTY",
+]
