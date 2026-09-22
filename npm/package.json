@@ -1,0 +1,37 @@
+{
+  "name": "@azimovlabs/mcp-shadow-pty",
+  "version": "0.1.0",
+  "description": "ShadowPTY - Headless TUI testing & session recording MCP server",
+  "bin": {
+    "shadowpty": "./bin/shadowpty.js",
+    "mcp-shadow-pty": "./bin/shadowpty.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "tui",
+    "pty",
+    "testing",
+    "asciicast",
+    "asciinema"
+  ],
+  "author": "Pedro Gabriel <pplanel@gmail.com>",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pplanel/ShadowPTY.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pplanel/ShadowPTY/issues"
+  },
+  "homepage": "https://github.com/pplanel/ShadowPTY#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -61,16 +61,22 @@ pub struct TuiSession {
     pub child: Box<dyn Child + Send + Sync>,
     recorder: SharedRecorder,
     shutdown_flag: Arc<AtomicBool>,
-    reader_handle: Option<JoinHandle<()>>,
+    _reader_handle: Option<JoinHandle<()>>,
 }
 
 impl Drop for TuiSession {
     fn drop(&mut self) {
         self.shutdown_flag.store(true, Ordering::SeqCst);
         let _ = self.child.kill();
-        let exit_status = self.child.wait().ok();
-        if let Some(handle) = self.reader_handle.take() {
-            let _ = handle.join();
+        let mut exit_status = self.child.try_wait().ok().flatten();
+        if exit_status.is_none() {
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                if let Ok(Some(status)) = self.child.try_wait() {
+                    exit_status = Some(status);
+                    break;
+                }
+            }
         }
         if let Ok(mut rec_guard) = self.recorder.lock()
             && let Some(rec) = rec_guard.as_mut()
@@ -173,7 +179,7 @@ impl PtyManager {
             child,
             recorder,
             shutdown_flag,
-            reader_handle: Some(reader_handle),
+            _reader_handle: Some(reader_handle),
         });
         drop(session_lock);
 

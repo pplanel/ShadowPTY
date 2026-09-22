@@ -195,6 +195,14 @@ asciinema play examples/neofetch/recording.cast
 
 ## 📦 Installation & Setup
 
+### Via `npx` (Zero Installation)
+
+Run immediately without compiling:
+
+```bash
+npx -y @pplanel/mcp-shadow-pty
+```
+
 ### Building from Source
 
 Ensure you have Rust 1.88+ installed:
@@ -225,29 +233,56 @@ nix develop
 
 ## 🔌 Integrating with MCP Clients
 
-### Claude Desktop / Claude CLI
+### Recommended: Via `npx`
+
+#### Claude Desktop / Claude CLI
 
 Add to your `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "shadowpty": {
-      "command": "/path/to/ShadowPTY/target/release/shadowpty",
-      "args": []
+    "shadow-pty": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@pplanel/mcp-shadow-pty"
+      ]
     }
   }
 }
 ```
 
-### Antigravity (`antigravity-cli`)
+#### Antigravity (`antigravity-cli`)
 
 Add to `~/.gemini/config/mcp_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "shadowpty": {
+    "shadow-pty": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@pplanel/mcp-shadow-pty"
+      ]
+    }
+  }
+}
+```
+
+#### Cursor
+
+Add to your Cursor MCP settings (`command` type):
+- **Command**: `npx`
+- **Args**: `-y`, `@pplanel/mcp-shadow-pty`
+
+### Alternative: Via Locally Compiled Binary
+
+```json
+{
+  "mcpServers": {
+    "shadow-pty": {
       "command": "/path/to/ShadowPTY/target/release/shadowpty",
       "args": []
     }

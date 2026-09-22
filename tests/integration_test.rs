@@ -66,6 +66,7 @@ async fn test_asciicast_v3_recording() {
 
     // Exit
     manager.send_input("exit<ENTER>").await.expect("exit");
+    tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Drop manager / session to trigger exit code recording
     drop(manager);
