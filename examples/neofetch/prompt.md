@@ -2,6 +2,8 @@
 
 This example demonstrates using **ShadowPTY** to spawn an interactive shell in a pseudo-terminal, record the session in asciicast v3 format, inspect the rendered screen with semantic ANSI tags, send keystrokes, and cleanly terminate the session.
 
+[![asciicast](https://asciinema.org/a/h4tKuB4nJSyDvGUo.svg)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
+
 ---
 
 ## 1. Session Objective
