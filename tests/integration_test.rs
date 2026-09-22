@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::time::Duration;
 use shadowpty::pty_manager::{PtyConfig, PtyManager};
+use std::time::Duration;
 
 #[tokio::test]
 async fn test_interactive_pty_session() {
