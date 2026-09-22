@@ -31,7 +31,16 @@ function getTargetTriple() {
     process.exit(1);
   }
 
-  return `${arch}-${platform}`;
+  const target = `${arch}-${platform}`;
+
+  if (target === 'x86_64-apple-darwin') {
+    process.stderr.write(
+      `[ShadowPTY] Intel macOS (${target}) precompiled binary is not provided. Please use Apple Silicon (aarch64) or build from source with cargo.\n`
+    );
+    process.exit(1);
+  }
+
+  return target;
 }
 
 function downloadBinary(url, destination) {
