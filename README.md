@@ -1,7 +1,7 @@
 # ShadowPTY (`termcp`)
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![Rust Edition: 2024](https://img.shields.io/badge/Rust-2024%20(1.85%2B)-orange.svg)](https://www.rust-lang.org)
+[![Rust Edition: 2024](https://img.shields.io/badge/Rust-2024%20(1.88%2B)-orange.svg)](https://www.rust-lang.org)
 
 **ShadowPTY** is a high-performance, headless Model Context Protocol (MCP) server written in Rust that enables LLM agents and automated test suites to interactively drive, inspect, and test Text User Interface (TUI) applications.
 
@@ -88,7 +88,7 @@ Captures the current state of the terminal screen rendered with semantic tags.
 
 ### Building from Source
 
-Ensure you have Rust 1.85+ installed:
+Ensure you have Rust 1.88+ installed:
 
 ```bash
 git clone https://github.com/pplanel/termcp.git

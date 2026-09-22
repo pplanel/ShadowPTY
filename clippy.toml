@@ -1,5 +1,5 @@
-# Define minimum supported Rust version (Edition 2024 stabilized in 1.85+)
-msrv = "1.85.0"
+# Define minimum supported Rust version (rmcp and darling require 1.88+)
+msrv = "1.88.0"
 
 # --- Complexity & Structure ---
 

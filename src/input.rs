@@ -116,14 +116,13 @@ fn parse_modifier_token(token: &str, output: &mut Vec<u8>) -> bool {
     if let Some(rest) = token
         .strip_prefix("CTRL+")
         .or_else(|| token.strip_prefix("C-"))
+        && rest.len() == 1
     {
-        if rest.len() == 1 {
-            let ch = rest.chars().next().unwrap_or('\0');
-            if ch.is_ascii_alphabetic() {
-                let code = (ch.to_ascii_uppercase() as u8) - b'@';
-                output.push(code);
-                return true;
-            }
+        let ch = rest.chars().next().unwrap_or('\0');
+        if ch.is_ascii_alphabetic() {
+            let code = (ch.to_ascii_uppercase() as u8) - b'@';
+            output.push(code);
+            return true;
         }
     }
 
@@ -132,13 +131,12 @@ fn parse_modifier_token(token: &str, output: &mut Vec<u8>) -> bool {
         .strip_prefix("ALT+")
         .or_else(|| token.strip_prefix("A-"))
         .or_else(|| token.strip_prefix("M-"))
+        && rest.len() == 1
     {
-        if rest.len() == 1 {
-            let ch = rest.chars().next().unwrap_or('\0');
-            output.push(0x1b);
-            output.push(ch as u8);
-            return true;
-        }
+        let ch = rest.chars().next().unwrap_or('\0');
+        output.push(0x1b);
+        output.push(ch as u8);
+        return true;
     }
 
     false

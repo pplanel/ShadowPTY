@@ -72,11 +72,11 @@ impl Drop for TuiSession {
         if let Some(handle) = self.reader_handle.take() {
             let _ = handle.join();
         }
-        if let Ok(mut rec_guard) = self.recorder.lock() {
-            if let Some(rec) = rec_guard.as_mut() {
-                let code = exit_status.map_or(0, |status| i32::from(!status.success()));
-                let _ = rec.record_exit(code);
-            }
+        if let Ok(mut rec_guard) = self.recorder.lock()
+            && let Some(rec) = rec_guard.as_mut()
+        {
+            let code = exit_status.map_or(0, |status| i32::from(!status.success()));
+            let _ = rec.record_exit(code);
         }
     }
 }
@@ -197,10 +197,10 @@ impl PtyManager {
             .flush()
             .context("failed to flush PTY writer")?;
 
-        if let Ok(mut rec_guard) = session.recorder.lock() {
-            if let Some(rec) = rec_guard.as_mut() {
-                let _ = rec.record_input(&bytes);
-            }
+        if let Ok(mut rec_guard) = session.recorder.lock()
+            && let Some(rec) = rec_guard.as_mut()
+        {
+            let _ = rec.record_input(&bytes);
         }
 
         drop(session_lock);
@@ -234,10 +234,10 @@ impl PtyManager {
         session.info.rows = rows;
         session.info.cols = cols;
 
-        if let Ok(mut rec_guard) = session.recorder.lock() {
-            if let Some(rec) = rec_guard.as_mut() {
-                let _ = rec.record_resize(cols, rows);
-            }
+        if let Ok(mut rec_guard) = session.recorder.lock()
+            && let Some(rec) = rec_guard.as_mut()
+        {
+            let _ = rec.record_resize(cols, rows);
         }
 
         drop(session_lock);
@@ -291,10 +291,10 @@ fn run_pty_reader(
                 if let Ok(mut locked_parser) = parser.lock() {
                     locked_parser.process(chunk);
                 }
-                if let Ok(mut rec_guard) = recorder.lock() {
-                    if let Some(rec) = rec_guard.as_mut() {
-                        let _ = rec.record_output(chunk);
-                    }
+                if let Ok(mut rec_guard) = recorder.lock()
+                    && let Some(rec) = rec_guard.as_mut()
+                {
+                    let _ = rec.record_output(chunk);
                 }
             }
             Err(e) => {
