@@ -82,26 +82,6 @@ agg session.cast session.gif
 
 ---
 
-## 🚀 Real-World Showcase: Recording `fastfetch` in `nix-shell`
-
-[![asciicast](https://asciinema.org/a/h4tKuB4nJSyDvGUo.svg)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
-
-A complete recorded session is included in [`examples/neofetch/`](examples/neofetch/):
-
-1. **Started** an isolated `nix-shell -p fastfetch` in a 35x100 PTY session with recording enabled.
-2. **Sent** `fastfetch<ENTER>` to inspect system configuration and hardware details.
-3. **Captured** the formatted screen state containing ANSI color palettes and ASCII art.
-4. **Terminated** cleanly with `exit<ENTER>`.
-
-To view the step-by-step MCP prompt and response logs, see [`examples/neofetch/prompt.md`](examples/neofetch/prompt.md).  
-To replay the actual recorded session:
-
-```bash
-asciinema play examples/neofetch/recording.cast
-```
-
----
-
 ## 🛠️ MCP Tools Reference
 
 ShadowPTY exposes 4 MCP tools:
@@ -168,7 +148,7 @@ Captures the current visible state of the terminal screen formatted with semanti
 ```mermaid
 flowchart TD
     Client["MCP Client (LLM / Test Suite)"] <-->|JSON-RPC via stdio| Server["ShadowPTY Server (rmcp)"]
-    Server <--> PtyMgr["PtyManager (Arc<Mutex<TuiSession>>)"]
+    Server <--> PtyMgr["PtyManager (Session Manager)"]
 
     subgraph PTY Subsystem
         PtyMgr -->|tui_input| Master["PTY Master (portable-pty)"]
@@ -178,18 +158,38 @@ flowchart TD
 
     subgraph Virtual Screen Buffer
         Master -->|Raw byte stream| Reader["Reader Thread"]
-        Reader -->|parser.process()| Parser["VT100 Parser (vt100)"]
+        Reader -->|Process bytes| Parser["VT100 Parser (vt100)"]
         Parser -->|Screen cells| Formatter["Semantic Markup Formatter"]
         Formatter -->|tui_read response| Server
     end
 
     subgraph Asciicast v3 Recorder
-        PtyMgr -.->|Input events 'i'| Recorder["AsciicastRecorder"]
-        PtyMgr -.->|Resize events 'r'| Recorder
-        Reader -.->|Raw output chunks 'o'| Recorder
-        PtyMgr -.->|Exit code 'x'| Recorder
-        Recorder -->|Auto-flushed stream| CastFile[("session.cast\n(asciicast v3)")]
+        PtyMgr -.->|Input events i| Recorder["AsciicastRecorder"]
+        PtyMgr -.->|Resize events r| Recorder
+        Reader -.->|Output chunks o| Recorder
+        PtyMgr -.->|Exit code x| Recorder
+        Recorder -->|Auto-flushed stream| CastFile[("session.cast<br/>asciicast v3")]
     end
+```
+
+---
+
+## 🚀 Real-World Showcase: Recording `fastfetch` in `nix-shell`
+
+[![asciicast](https://asciinema.org/a/h4tKuB4nJSyDvGUo.svg)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
+
+A complete recorded session is included in [`examples/neofetch/`](examples/neofetch/):
+
+1. **Started** an isolated `nix-shell -p fastfetch` in a 35x100 PTY session with recording enabled.
+2. **Sent** `fastfetch<ENTER>` to inspect system configuration and hardware details.
+3. **Captured** the formatted screen state containing ANSI color palettes and ASCII art.
+4. **Terminated** cleanly with `exit<ENTER>`.
+
+To view the step-by-step MCP prompt and response logs, see [`examples/neofetch/prompt.md`](examples/neofetch/prompt.md).  
+To replay the actual recorded session:
+
+```bash
+asciinema play examples/neofetch/recording.cast
 ```
 
 ---
