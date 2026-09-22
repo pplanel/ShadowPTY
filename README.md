@@ -200,7 +200,7 @@ asciinema play examples/neofetch/recording.cast
 Run immediately without compiling:
 
 ```bash
-npx -y @pplanel/mcp-shadow-pty
+npx -y @azimovlabs/mcp-shadow-pty
 ```
 
 ### Building from Source
@@ -246,7 +246,7 @@ Add to your `claude_desktop_config.json`:
       "command": "npx",
       "args": [
         "-y",
-        "@pplanel/mcp-shadow-pty"
+        "@azimovlabs/mcp-shadow-pty"
       ]
     }
   }
@@ -264,7 +264,7 @@ Add to `~/.gemini/config/mcp_config.json`:
       "command": "npx",
       "args": [
         "-y",
-        "@pplanel/mcp-shadow-pty"
+        "@azimovlabs/mcp-shadow-pty"
       ]
     }
   }
@@ -275,7 +275,7 @@ Add to `~/.gemini/config/mcp_config.json`:
 
 Add to your Cursor MCP settings (`command` type):
 - **Command**: `npx`
-- **Args**: `-y`, `@pplanel/mcp-shadow-pty`
+- **Args**: `-y`, `@azimovlabs/mcp-shadow-pty`
 
 ### Alternative: Via Locally Compiled Binary
 

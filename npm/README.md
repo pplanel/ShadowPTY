@@ -1,6 +1,6 @@
-# @pplanel/mcp-shadow-pty
+# @azimovlabs/mcp-shadow-pty
 
-[![npm version](https://img.shields.io/npm/v/@pplanel/mcp-shadow-pty.svg)](https://www.npmjs.com/package/@pplanel/mcp-shadow-pty)
+[![npm version](https://img.shields.io/npm/v/@azimovlabs/mcp-shadow-pty.svg)](https://www.npmjs.com/package/@azimovlabs/mcp-shadow-pty)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/pplanel/ShadowPTY/blob/main/LICENSE-MIT)
 
 **ShadowPTY** is a high-performance, headless Model Context Protocol (MCP) server written in Rust that enables LLM agents, automated test suites, and CI pipelines to interactively drive, inspect, and **record** Text User Interface (TUI) applications.
@@ -14,7 +14,7 @@ This npm package provides zero-configuration instant execution via `npx` by down
 Run without installing:
 
 ```bash
-npx -y @pplanel/mcp-shadow-pty
+npx -y @azimovlabs/mcp-shadow-pty
 ```
 
 ---
@@ -32,7 +32,7 @@ Add to your `claude_desktop_config.json`:
       "command": "npx",
       "args": [
         "-y",
-        "@pplanel/mcp-shadow-pty"
+        "@azimovlabs/mcp-shadow-pty"
       ]
     }
   }
@@ -50,7 +50,7 @@ Add to `~/.gemini/config/mcp_config.json`:
       "command": "npx",
       "args": [
         "-y",
-        "@pplanel/mcp-shadow-pty"
+        "@azimovlabs/mcp-shadow-pty"
       ]
     }
   }
@@ -62,7 +62,7 @@ Add to `~/.gemini/config/mcp_config.json`:
 Add an MCP server in Cursor settings:
 - **Name**: `shadow-pty`
 - **Type**: `command`
-- **Command**: `npx -y @pplanel/mcp-shadow-pty`
+- **Command**: `npx -y @azimovlabs/mcp-shadow-pty`
 
 ---
 
