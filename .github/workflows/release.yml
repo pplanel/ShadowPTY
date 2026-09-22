@@ -111,6 +111,13 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cd npm
+          PKG_NAME=$(node -p "require('./package.json').name")
+
+          if npm view "$PKG_NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "Version $VERSION of $PKG_NAME is already published on npm. Skipping publish."
+            exit 0
+          fi
+
           npm version "$VERSION" --allow-same-version --no-git-tag-version
           if [ -n "$NPM_TOKEN" ]; then
             echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
