@@ -49,7 +49,6 @@
       packages = {
         default = shadowpty;
         inherit shadowpty;
-        termcp = shadowpty;
       };
 
       apps.default = flake-utils.lib.mkApp {
