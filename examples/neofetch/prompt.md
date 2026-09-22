@@ -1,6 +1,6 @@
 # Example: Nix-Shell with System Information (`fastfetch`)
 
-This example demonstrates using **ShadowPTY** (`termcp`) to spawn an interactive shell in a pseudo-terminal, record the session in asciicast v3 format, inspect the rendered screen with semantic ANSI tags, send keystrokes, and cleanly terminate the session.
+This example demonstrates using **ShadowPTY** to spawn an interactive shell in a pseudo-terminal, record the session in asciicast v3 format, inspect the rendered screen with semantic ANSI tags, send keystrokes, and cleanly terminate the session.
 
 ---
 
@@ -25,13 +25,13 @@ This example demonstrates using **ShadowPTY** (`termcp`) to spawn an interactive
   "args": ["-p", "fastfetch"],
   "rows": 35,
   "cols": 100,
-  "record_path": "/Users/pplanel/src/termcp/examples/neofetch/recording.cast"
+  "record_path": "examples/neofetch/recording.cast"
 }
 ```
 
 **Result:**
 ```text
-Started command 'nix-shell' in PTY (pid: 48644, rows: 35, cols: 100, recording to '/Users/pplanel/src/termcp/examples/neofetch/recording.cast')
+Started command 'nix-shell' in PTY (pid: 48644, rows: 35, cols: 100, recording to 'examples/neofetch/recording.cast')
 ```
 
 ---

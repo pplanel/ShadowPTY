@@ -1,14 +1,18 @@
 [package]
-name = "termcp"
+name = "shadowpty"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88.0"
 description = "ShadowPTY - Headless TUI testing MCP server"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/pplanel/termcp"
+repository = "https://github.com/pplanel/ShadowPTY"
 readme = "README.md"
 keywords = ["pty", "tui", "mcp", "terminal", "testing"]
 categories = ["command-line-utilities", "development-tools::testing"]
+
+[lib]
+name = "shadowpty"
+path = "src/lib.rs"
 
 [lints.rust]
 unsafe_code = "forbid"

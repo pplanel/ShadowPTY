@@ -41,18 +41,19 @@
 
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-      termcp = craneLib.buildPackage (commonArgs
+      shadowpty = craneLib.buildPackage (commonArgs
         // {
           inherit cargoArtifacts;
         });
     in {
       packages = {
-        default = termcp;
-        inherit termcp;
+        default = shadowpty;
+        inherit shadowpty;
+        termcp = shadowpty;
       };
 
       apps.default = flake-utils.lib.mkApp {
-        drv = termcp;
+        drv = shadowpty;
       };
 
       devShells.default = craneLib.devShell {

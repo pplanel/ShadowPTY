@@ -1,4 +1,4 @@
-# ShadowPTY (`termcp`)
+# ShadowPTY
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust Edition: 2024](https://img.shields.io/badge/Rust-2024%20(1.88%2B)-orange.svg)](https://www.rust-lang.org)
@@ -91,19 +91,19 @@ Captures the current state of the terminal screen rendered with semantic tags.
 Ensure you have Rust 1.88+ installed:
 
 ```bash
-git clone https://github.com/pplanel/termcp.git
-cd termcp
+git clone https://github.com/pplanel/ShadowPTY.git
+cd ShadowPTY
 cargo build --release
 ```
 
-The binary will be at `target/release/termcp`.
+The binary will be at `target/release/shadowpty`.
 
 ### Using Nix Flake
 
 Run directly with Nix:
 
 ```bash
-nix run github:pplanel/termcp
+nix run github:pplanel/ShadowPTY
 ```
 
 Or enter a reproducible development shell:
@@ -124,7 +124,7 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "shadowpty": {
-      "command": "/path/to/termcp/target/release/termcp",
+      "command": "/path/to/ShadowPTY/target/release/shadowpty",
       "args": []
     }
   }
@@ -139,7 +139,7 @@ Add to `~/.gemini/config/mcp_config.json`:
 {
   "mcpServers": {
     "shadowpty": {
-      "command": "/path/to/termcp/target/release/termcp",
+      "command": "/path/to/ShadowPTY/target/release/shadowpty",
       "args": []
     }
   }

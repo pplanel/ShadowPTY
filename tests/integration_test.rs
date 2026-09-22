@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::time::Duration;
-use termcp::pty_manager::{PtyConfig, PtyManager};
+use shadowpty::pty_manager::{PtyConfig, PtyManager};
 
 #[tokio::test]
 async fn test_interactive_pty_session() {
@@ -40,7 +40,7 @@ async fn test_interactive_pty_session() {
 #[tokio::test]
 async fn test_asciicast_v3_recording() {
     let temp_dir = std::env::temp_dir();
-    let cast_path = temp_dir.join(format!("termcp_test_{}.cast", std::process::id()));
+    let cast_path = temp_dir.join(format!("shadowpty_test_{}.cast", std::process::id()));
     let cast_path_str = cast_path.to_string_lossy().to_string();
 
     let manager = PtyManager::new();
