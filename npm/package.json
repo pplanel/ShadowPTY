@@ -3,8 +3,8 @@
   "version": "0.2.0",
   "description": "ShadowPTY - Headless TUI testing & session recording MCP server",
   "bin": {
-    "shadowpty": "./bin/shadowpty.js",
-    "mcp-shadow-pty": "./bin/shadowpty.js"
+    "shadowpty": "bin/shadowpty.js",
+    "mcp-shadow-pty": "bin/shadowpty.js"
   },
   "files": [
     "bin/"
