@@ -34,54 +34,6 @@ It allocates a real pseudo-terminal (PTY) on macOS and Linux, maintains an in-me
 
 ---
 
-## 📹 Interactive Session Recording (`asciicast v3`)
-
-ShadowPTY features first-class, zero-overhead session recording adhering to the official **[asciicast v3 specification](https://docs.asciinema.org/manual/asciicast/v3/)**.
-
-### Why Record Sessions?
-
-| Use Case | Benefit |
-| :--- | :--- |
-| **Agent Visual Audit Trail** | Record exactly what the LLM agent saw, typed, and triggered during complex multi-step terminal tasks. |
-| **CI / Automated Testing Artifacts** | Attach `.cast` files to test runs so failed TUI assertions can be visually inspected and replayed rather than debugging raw logs. |
-| **Demos & Documentation** | Generate reproducible terminal recordings that can be embedded into documentation, rendered to SVG/GIF with tools like `agg`, or played on the web. |
-| **Deterministic Debugging** | Step through exact keystroke sequences and terminal resize events with millisecond precision. |
-
-### How It Works
-
-When you supply `record_path` to `tui_start`, ShadowPTY immediately initializes the `.cast` file with a spec-compliant v3 header:
-
-```json
-{"version": 3, "term": {"cols": 100, "rows": 35, "type": "xterm-256color"}, "timestamp": 1726960000, "command": "nix-shell"}
-```
-
-As the session runs, every event is streamed and auto-flushed with relative delta timestamps:
-
-```json
-[0.152, "o", "\u001b[?2004h[nix-shell:~]$ "]
-[1.204, "i", "fastfetch\r"]
-[0.015, "o", "fastfetch\r\n"]
-[0.342, "r", "120x40"]
-[0.850, "x", "0"]
-```
-
-### Replaying Recordings
-
-Because recordings follow standard `asciicast v3`, they can be played back in any terminal with `asciinema`:
-
-```bash
-# Replay with real timing
-asciinema play session.cast
-
-# Replay at 2x speed
-asciinema play -s 2 session.cast
-
-# Render to an animated SVG or GIF (using agg)
-agg session.cast session.gif
-```
-
----
-
 ## 🛠️ MCP Tools Reference
 
 ShadowPTY exposes 4 MCP tools:
@@ -170,6 +122,53 @@ flowchart TD
         PtyMgr -.->|Exit code x| Recorder
         Recorder -->|Auto-flushed stream| CastFile[("session.cast<br/>asciicast v3")]
     end
+```
+---
+
+## 📹 Interactive Session Recording (`asciicast v3`)
+
+ShadowPTY features first-class, zero-overhead session recording adhering to the official **[asciicast v3 specification](https://docs.asciinema.org/manual/asciicast/v3/)**.
+
+### Why Record Sessions?
+
+| Use Case | Benefit |
+| :--- | :--- |
+| **Agent Visual Audit Trail** | Record exactly what the LLM agent saw, typed, and triggered during complex multi-step terminal tasks. |
+| **CI / Automated Testing Artifacts** | Attach `.cast` files to test runs so failed TUI assertions can be visually inspected and replayed rather than debugging raw logs. |
+| **Demos & Documentation** | Generate reproducible terminal recordings that can be embedded into documentation, rendered to SVG/GIF with tools like `agg`, or played on the web. |
+| **Deterministic Debugging** | Step through exact keystroke sequences and terminal resize events with millisecond precision. |
+
+### How It Works
+
+When you supply `record_path` to `tui_start`, ShadowPTY immediately initializes the `.cast` file with a spec-compliant v3 header:
+
+```json
+{"version": 3, "term": {"cols": 100, "rows": 35, "type": "xterm-256color"}, "timestamp": 1726960000, "command": "nix-shell"}
+```
+
+As the session runs, every event is streamed and auto-flushed with relative delta timestamps:
+
+```json
+[0.152, "o", "\u001b[?2004h[nix-shell:~]$ "]
+[1.204, "i", "fastfetch\r"]
+[0.015, "o", "fastfetch\r\n"]
+[0.342, "r", "120x40"]
+[0.850, "x", "0"]
+```
+
+### Replaying Recordings
+
+Because recordings follow standard `asciicast v3`, they can be played back in any terminal with `asciinema`:
+
+```bash
+# Replay with real timing
+asciinema play session.cast
+
+# Replay at 2x speed
+asciinema play -s 2 session.cast
+
+# Render to an animated SVG or GIF (using agg)
+agg session.cast session.gif
 ```
 
 ---
