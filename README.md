@@ -1,7 +1,7 @@
-# ShadowPTY (`termcp`)
+# ShadowPTY
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![Rust Edition: 2024](https://img.shields.io/badge/Rust-2024%20(1.85%2B)-orange.svg)](https://www.rust-lang.org)
+[![Rust Edition: 2024](https://img.shields.io/badge/Rust-2024%20(1.88%2B)-orange.svg)](https://www.rust-lang.org)
 
 **ShadowPTY** is a high-performance, headless Model Context Protocol (MCP) server written in Rust that enables LLM agents and automated test suites to interactively drive, inspect, and test Text User Interface (TUI) applications.
 
@@ -33,12 +33,14 @@ Spawns a command inside a new pseudo-terminal session, tearing down any previous
   - `args` (*array of strings*, optional): Command-line arguments.
   - `rows` (*integer*, optional, default: 24): Initial terminal rows.
   - `cols` (*integer*, optional, default: 80): Initial terminal columns.
+  - `record_path` (*string*, optional): File path where session will be recorded in [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/) format (`.cast`).
 - **Example**:
   ```json
   {
     "command": "htop",
     "rows": 30,
-    "cols": 100
+    "cols": 100,
+    "record_path": "/tmp/htop-session.cast"
   }
   ```
 
@@ -86,22 +88,22 @@ Captures the current state of the terminal screen rendered with semantic tags.
 
 ### Building from Source
 
-Ensure you have Rust 1.85+ installed:
+Ensure you have Rust 1.88+ installed:
 
 ```bash
-git clone https://github.com/pplanel/termcp.git
-cd termcp
+git clone https://github.com/pplanel/ShadowPTY.git
+cd ShadowPTY
 cargo build --release
 ```
 
-The binary will be at `target/release/termcp`.
+The binary will be at `target/release/shadowpty`.
 
 ### Using Nix Flake
 
 Run directly with Nix:
 
 ```bash
-nix run github:pplanel/termcp
+nix run github:pplanel/ShadowPTY
 ```
 
 Or enter a reproducible development shell:
@@ -122,7 +124,7 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "shadowpty": {
-      "command": "/path/to/termcp/target/release/termcp",
+      "command": "/path/to/ShadowPTY/target/release/shadowpty",
       "args": []
     }
   }
@@ -137,7 +139,7 @@ Add to `~/.gemini/config/mcp_config.json`:
 {
   "mcpServers": {
     "shadowpty": {
-      "command": "/path/to/termcp/target/release/termcp",
+      "command": "/path/to/ShadowPTY/target/release/shadowpty",
       "args": []
     }
   }

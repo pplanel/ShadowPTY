@@ -2,8 +2,8 @@ use anyhow::Result;
 use rmcp::{ServiceExt, transport::io::stdio};
 use tracing_subscriber::EnvFilter;
 
-use termcp::pty_manager::PtyManager;
-use termcp::server::ShadowPtyServer;
+use shadowpty::pty_manager::PtyManager;
+use shadowpty::server::ShadowPtyServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
