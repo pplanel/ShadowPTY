@@ -132,3 +132,121 @@ async fn test_asciicast_v3_recording() {
 
     let _ = std::fs::remove_file(&cast_path);
 }
+
+fn is_process_running(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[tokio::test]
+async fn test_stop_app_terminates_and_reaps_process() {
+    let manager = PtyManager::new();
+
+    // Spawn a long-running process (sleep 30)
+    let args = vec!["30".to_string()];
+    let config = PtyConfig::new("sleep", &args, 24, 80);
+    let info = manager.start_app(&config).await.expect("start sleep");
+    let pid = info.pid.expect("valid pid");
+
+    // Process should be active in PtyManager and running in the OS
+    assert!(manager.is_active().await);
+    assert!(is_process_running(pid), "Process {pid} should be running");
+
+    // Terminate the session
+    let stopped_info = manager.stop_app().await.expect("stop_app should succeed");
+    assert_eq!(stopped_info.pid, Some(pid));
+
+    // Session is no longer active in manager
+    assert!(!manager.is_active().await);
+
+    // Give OS a moment to finish reap
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Process must be killed AND reaped (not a zombie!)
+    assert!(
+        !is_process_running(pid),
+        "Process {pid} should be terminated and reaped from process table"
+    );
+
+    // Subsequent call to stop_app should return error
+    let err = manager.stop_app().await;
+    assert!(
+        err.is_err(),
+        "Calling stop_app with no active session should fail"
+    );
+}
+
+#[tokio::test]
+async fn test_tui_end_tool() {
+    use shadowpty::server::ShadowPtyServer;
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+
+    // Calling tui_end with no active session returns an error CallToolResult
+    let result = server.tui_end().await.expect("tool call ok");
+    assert!(result.is_error.unwrap_or(false));
+
+    // Start a session
+    let args = vec!["30".to_string()];
+    let config = PtyConfig::new("sleep", &args, 24, 80);
+    let info = manager.start_app(&config).await.expect("start sleep");
+    let pid = info.pid.expect("valid pid");
+
+    // Process should be running
+    assert!(is_process_running(pid));
+
+    // Call tui_end
+    let result = server.tui_end().await.expect("tool call ok");
+    assert!(!result.is_error.unwrap_or(false));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !is_process_running(pid),
+        "Process should be reaped after tui_end"
+    );
+}
+
+#[tokio::test]
+async fn test_stop_app_terminates_descendant_child_processes() {
+    let manager = PtyManager::new();
+
+    // Spawn sh running a background sleep command
+    let unique_sleep = "sleep 9471";
+    let args = vec!["-c".to_string(), format!("{unique_sleep} & wait")];
+    let config = PtyConfig::new("sh", &args, 24, 80);
+    let info = manager
+        .start_app(&config)
+        .await
+        .expect("start sh with background sleep");
+    let pid = info.pid.expect("valid pid");
+
+    // Wait for the background sleep process to start
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify background sleep process is running
+    let pgrep = std::process::Command::new("pgrep")
+        .args(["-f", unique_sleep])
+        .output()
+        .expect("pgrep");
+    assert!(pgrep.status.success(), "Background sleep should be running");
+
+    // Terminate session
+    manager.stop_app().await.expect("stop_app ok");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Both leader PID and descendant sleep process must be killed
+    assert!(!is_process_running(pid), "Session leader should be killed");
+    let pgrep_after = std::process::Command::new("pgrep")
+        .args(["-f", unique_sleep])
+        .output()
+        .expect("pgrep");
+    assert!(
+        !pgrep_after.status.success(),
+        "Background sleep should also be terminated"
+    );
+}

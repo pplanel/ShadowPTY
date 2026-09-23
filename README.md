@@ -26,7 +26,7 @@ It allocates a real pseudo-terminal (PTY) on macOS and Linux, maintains an in-me
 - 🔄 **Dynamic Window Resizing**:
   Dynamically resize the PTY and virtual screen buffer on the fly (`tui_resize`) to test responsive TUI behavior, re-rendering, and layout adaptability.
 - 🔌 **Native Model Context Protocol (MCP)**:
-  Exposes 4 standardized MCP tools over `stdio` using `rmcp` 3.4+, ready to drop into Claude Desktop, Antigravity (`agy`), Cursor, and custom agent frameworks.
+  Exposes 5 standardized MCP tools over `stdio` using `rmcp` 3.4+, ready to drop into Claude Desktop, Antigravity (`agy`), Cursor, and custom agent frameworks.
 - 🛡️ **Protocol Isolation & Safety**:
   Internal diagnostics, traces, and child process logs are strictly piped to `stderr`, guaranteeing that `stdout` remains 100% clean and uncorrupted for JSON-RPC messages.
 - ❄️ **Reproducible Nix Environment**:
@@ -36,7 +36,7 @@ It allocates a real pseudo-terminal (PTY) on macOS and Linux, maintains an in-me
 
 ## 🛠️ MCP Tools Reference
 
-ShadowPTY exposes 4 MCP tools:
+ShadowPTY exposes 5 MCP tools:
 
 ### 1. `tui_start`
 Spawns a command inside a new pseudo-terminal session, terminating any previous session.
@@ -91,6 +91,15 @@ Captures the current visible state of the terminal screen formatted with semanti
   ```text
   <fg:green><bold>SUCCESS</bold></fg> Process completed in 0.42s
   <fg:bright-black>Press [q] to exit</fg>
+  ```
+
+### 5. `tui_end`
+Terminates the active pseudo-terminal session, killing the running child process, ensuring it is reaped from the operating system (preventing zombie processes), and finalizing asciicast recordings.
+
+- **Parameters**: None.
+- **Example Output**:
+  ```text
+  Terminated session for command 'htop' (pid: 12345)
   ```
 
 ---

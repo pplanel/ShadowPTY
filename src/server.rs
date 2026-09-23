@@ -158,4 +158,27 @@ impl ShadowPtyServer {
             ])),
         }
     }
+
+    /// Terminates the active pseudo-terminal session, killing the child process and releasing resources.
+    #[tool(
+        name = "tui_end",
+        description = "Terminates the active pseudo-terminal session, killing the running program and releasing resources."
+    )]
+    pub async fn tui_end(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.manager.stop_app().await {
+            Ok(info) => {
+                let pid_str = info
+                    .pid
+                    .map_or_else(|| "unknown".to_string(), |p| p.to_string());
+                let cmd = &info.command;
+                let msg = format!("Terminated session for command '{cmd}' (pid: {pid_str})");
+                Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text(msg),
+                ]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![
+                rmcp::model::ContentBlock::text(format!("Failed to terminate session: {e:#}")),
+            ])),
+        }
+    }
 }

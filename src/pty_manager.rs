@@ -66,7 +66,16 @@ pub struct TuiSession {
 
 impl Drop for TuiSession {
     fn drop(&mut self) {
-        self.shutdown_flag.store(true, Ordering::SeqCst);
+        #[cfg(unix)]
+        if let Some(pid) = self.child.process_id() {
+            // Signal the entire process group (-pid) to ensure any child processes spawned
+            // by the session leader are terminated rather than orphaned to init.
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &format!("-{pid}")])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
         let _ = self.child.kill();
         let mut exit_status = self.child.try_wait().ok().flatten();
         if exit_status.is_none() {
@@ -78,6 +87,12 @@ impl Drop for TuiSession {
                 }
             }
         }
+        if exit_status.is_none()
+            && let Ok(status) = self.child.wait()
+        {
+            exit_status = Some(status);
+        }
+        self.shutdown_flag.store(true, Ordering::SeqCst);
         if let Ok(mut rec_guard) = self.recorder.lock()
             && let Some(rec) = rec_guard.as_mut()
         {
@@ -275,6 +290,22 @@ impl PtyManager {
         let session_lock = self.session.lock().await;
         session_lock.is_some()
     }
+
+    /// Stops the currently active PTY session, terminating the child process and cleaning up resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is no active session.
+    pub async fn stop_app(&self) -> Result<ProcessInfo> {
+        let mut session_lock = self.session.lock().await;
+        let session = session_lock
+            .take()
+            .context("no active PTY session; call tui_start first")?;
+        drop(session_lock);
+        let info = session.info.clone();
+        drop(session);
+        Ok(info)
+    }
 }
 
 fn run_pty_reader(
@@ -341,5 +372,23 @@ mod tests {
         let (new_rows, new_cols) = mgr.resize(30, 100).await.unwrap();
         assert_eq!(new_rows, 30);
         assert_eq!(new_cols, 100);
+    }
+
+    #[tokio::test]
+    async fn test_pty_stop_app() {
+        let mgr = PtyManager::new();
+        // Stop with no session returns error
+        assert!(mgr.stop_app().await.is_err());
+
+        let cfg = PtyConfig::new("cat", &[], 10, 40);
+        mgr.start_app(&cfg).await.unwrap();
+        assert!(mgr.is_active().await);
+
+        let info = mgr.stop_app().await.unwrap();
+        assert_eq!(info.command, "cat");
+        assert!(!mgr.is_active().await);
+
+        // Subsequent stop returns error
+        assert!(mgr.stop_app().await.is_err());
     }
 }
