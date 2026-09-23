@@ -1,6 +1,6 @@
 {
   "name": "@azimovlabs/mcp-shadow-pty",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "ShadowPTY - Headless TUI testing & session recording MCP server",
   "bin": {
     "shadowpty": "bin/shadowpty.js",
