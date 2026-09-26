@@ -5,3 +5,4 @@ skills-lock.json
 *.swp
 *.orig
 result
+.worktrees/
