@@ -258,6 +258,10 @@ impl PtyManager {
             parser.screen_mut().set_size(rows, cols);
         }
 
+        if let Ok(mut locked_snap) = session.snap_term.lock() {
+            locked_snap.resize(rows, cols);
+        }
+
         session.info.rows = rows;
         session.info.cols = cols;
 
@@ -289,6 +293,28 @@ impl PtyManager {
         drop(session_lock);
 
         Ok(result)
+    }
+
+    /// Returns the current TUI screen rendered as an SVG string.
+    pub async fn take_screenshot(&self) -> Result<String> {
+        let session_lock = self.session.lock().await;
+        let session = session_lock
+            .as_ref()
+            .context("no active PTY session; call tui_start first")?;
+
+        let snap_lock = session
+            .snap_term
+            .lock()
+            .map_err(|_| anyhow::anyhow!("failed to acquire lock on termsnap terminal"))?;
+
+        let screen = snap_lock.current_screen();
+        let fonts = ["Menlo", "Consolas", "monospace"];
+        let svg = screen.to_svg(&fonts, termsnap_lib::FontMetrics::default()).to_string();
+
+        drop(snap_lock);
+        drop(session_lock);
+
+        Ok(svg)
     }
 
     /// Checks if a session is currently active.
@@ -334,6 +360,11 @@ fn run_pty_reader(
                 let chunk = &buffer[..n];
                 if let Ok(mut locked_parser) = parser.lock() {
                     locked_parser.process(chunk);
+                }
+                if let Ok(mut locked_snap) = snap_term.lock() {
+                    for &byte in chunk {
+                        locked_snap.process(byte);
+                    }
                 }
                 if let Ok(mut rec_guard) = recorder.lock()
                     && let Some(rec) = rec_guard.as_mut()
@@ -397,5 +428,19 @@ mod tests {
 
         // Subsequent stop returns error
         assert!(mgr.stop_app().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pty_take_screenshot() {
+        let mgr = PtyManager::new();
+        let args = ["hello shadowpty screenshot".to_string()];
+        let cfg = PtyConfig::new("echo", &args, 10, 40);
+        mgr.start_app(&cfg).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let svg = mgr.take_screenshot().await.unwrap();
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains("hello shadowpty screenshot"));
     }
 }
