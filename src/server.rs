@@ -159,6 +159,22 @@ impl ShadowPtyServer {
         }
     }
 
+    /// Generates an SVG screenshot of the current terminal screen.
+    #[tool(
+        name = "tui_take_screenshot",
+        description = "Generates an SVG screenshot of the current terminal screen state using termsnap."
+    )]
+    pub async fn tui_take_screenshot(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.manager.take_screenshot().await {
+            Ok(svg_string) => Ok(CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text(svg_string),
+            ])),
+            Err(e) => Ok(CallToolResult::error(vec![
+                rmcp::model::ContentBlock::text(format!("Failed to take screenshot: {e:#}")),
+            ])),
+        }
+    }
+
     /// Terminates the active pseudo-terminal session, killing the child process and releasing resources.
     #[tool(
         name = "tui_end",
