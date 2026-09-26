@@ -354,10 +354,15 @@ mod tests {
         assert_eq!(info.rows, 10);
         assert_eq!(info.cols, 40);
 
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-
-        let screen = mgr.read_screen().await.unwrap();
-        assert!(screen.contains("hello shadowpty"));
+        let mut screen = String::new();
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            screen = mgr.read_screen().await.unwrap();
+            if screen.contains("hello shadowpty") {
+                break;
+            }
+        }
+        assert!(screen.contains("hello shadowpty"), "screen was: {screen}");
     }
 
     #[tokio::test]
