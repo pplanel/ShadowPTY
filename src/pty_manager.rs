@@ -56,6 +56,7 @@ impl<'a> PtyConfig<'a> {
 pub struct TuiSession {
     pub info: ProcessInfo,
     pub parser: Arc<std::sync::Mutex<Parser>>,
+    pub snap_term: Arc<std::sync::Mutex<termsnap_lib::Term<termsnap_lib::VoidPtyWriter>>>,
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub child: Box<dyn Child + Send + Sync>,
@@ -157,6 +158,9 @@ impl PtyManager {
             config.cols,
             0,
         )));
+        let snap_term = Arc::new(std::sync::Mutex::new(
+            termsnap_lib::Term::new(config.rows, config.cols, termsnap_lib::VoidPtyWriter)
+        ));
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
         let recorder = if let Some(path) = config.record_path {
@@ -170,12 +174,13 @@ impl PtyManager {
 
         // Background reader thread feeding bytes to vt100::Parser and recorder
         let reader_parser = Arc::clone(&parser);
+        let reader_snap = Arc::clone(&snap_term);
         let reader_shutdown = Arc::clone(&shutdown_flag);
         let reader_recorder = Arc::clone(&recorder);
         let reader_handle = thread::Builder::new()
             .name("shadowpty-reader".to_string())
             .spawn(move || {
-                run_pty_reader(reader, &reader_parser, &reader_recorder, &reader_shutdown);
+                run_pty_reader(reader, &reader_parser, &reader_snap, &reader_recorder, &reader_shutdown);
             })
             .context("failed to spawn PTY reader thread")?;
 
@@ -189,6 +194,7 @@ impl PtyManager {
         *session_lock = Some(TuiSession {
             info: info.clone(),
             parser,
+            snap_term,
             writer,
             master,
             child,
@@ -311,6 +317,7 @@ impl PtyManager {
 fn run_pty_reader(
     mut reader: Box<dyn Read + Send>,
     parser: &Arc<std::sync::Mutex<Parser>>,
+    snap_term: &Arc<std::sync::Mutex<termsnap_lib::Term<termsnap_lib::VoidPtyWriter>>>,
     recorder: &SharedRecorder,
     shutdown_flag: &Arc<AtomicBool>,
 ) {
