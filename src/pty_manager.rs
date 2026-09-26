@@ -1,20 +1,20 @@
 //! PTY management and TUI screen state synchronization for ShadowPTY.
 
+use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::fs::File;
 
 use anyhow::{Context, Result};
 use tokio::sync::Mutex;
 
-use alacritty_terminal::tty::{self, Options, Pty, Shell};
-use alacritty_terminal::term::{Term, Config};
-use alacritty_terminal::event::{VoidListener, WindowSize, OnResize};
-use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+use alacritty_terminal::event::{OnResize, VoidListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
-use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
+use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::tty::{self, Options, Pty, Shell};
+use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 
 struct TermSize {
     columns: usize,
@@ -22,9 +22,15 @@ struct TermSize {
 }
 
 impl Dimensions for TermSize {
-    fn total_lines(&self) -> usize { self.screen_lines }
-    fn screen_lines(&self) -> usize { self.screen_lines }
-    fn columns(&self) -> usize { self.columns }
+    fn total_lines(&self) -> usize {
+        self.screen_lines
+    }
+    fn screen_lines(&self) -> usize {
+        self.screen_lines
+    }
+    fn columns(&self) -> usize {
+        self.columns
+    }
 }
 
 use crate::formatter::format_screen;
@@ -135,7 +141,7 @@ impl PtyManager {
             .map_err(|e| anyhow::anyhow!("failed to allocate pseudo-terminal: {e}"))?;
 
         let pid = pty.child().id();
-        
+
         let pty_reader = pty.file().try_clone().context("failed to clone pty file")?;
         let pty_writer = pty.file().try_clone().context("failed to clone pty file")?;
 
@@ -148,7 +154,11 @@ impl PtyManager {
             screen_lines: config.rows as usize,
         };
 
-        let terminal = Arc::new(std::sync::Mutex::new(Term::new(Config::default(), &term_size, VoidListener)));
+        let terminal = Arc::new(std::sync::Mutex::new(Term::new(
+            Config::default(),
+            &term_size,
+            VoidListener,
+        )));
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
         let recorder = if let Some(path) = config.record_path {
@@ -166,7 +176,12 @@ impl PtyManager {
         let reader_handle = thread::Builder::new()
             .name("shadowpty-reader".to_string())
             .spawn(move || {
-                run_pty_reader(pty_reader, &reader_terminal, &reader_recorder, &reader_shutdown);
+                run_pty_reader(
+                    pty_reader,
+                    &reader_terminal,
+                    &reader_recorder,
+                    &reader_shutdown,
+                );
             })
             .context("failed to spawn PTY reader thread")?;
 

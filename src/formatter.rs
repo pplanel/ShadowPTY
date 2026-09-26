@@ -6,13 +6,12 @@
 //!
 //! Contiguous cells sharing the same attributes are grouped together to minimize token overhead.
 
-
-use alacritty_terminal::term::Term;
 use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
-use alacritty_terminal::index::{Line, Column};
-use alacritty_terminal::grid::Dimensions;
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +72,7 @@ pub fn format_screen(term: &Term<VoidListener>) -> String {
     let grid = term.grid();
     let rows = grid.screen_lines();
     let cols = grid.columns();
-    
+
     let mut row_strings = Vec::with_capacity(rows);
 
     for row_idx in 0..rows {
@@ -127,7 +126,7 @@ fn find_last_active_col(term: &Term<VoidListener>, row_idx: usize, cols: usize) 
     let grid = term.grid();
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let row = &grid[Line(row_idx as i32)];
-    
+
     for col in (0..cols).rev() {
         let cell = &row[Column(col)];
         let style = CellStyle::from_cell(cell);
@@ -221,7 +220,10 @@ fn append_color_tags(
             close_tags.push(format!("</{prefix}>"));
         }
         Color::Spec(rgb) => {
-            open_tags.push(format!("<{prefix}:#{:02x}{:02x}{:02x}>", rgb.r, rgb.g, rgb.b));
+            open_tags.push(format!(
+                "<{prefix}:#{:02x}{:02x}{:02x}>",
+                rgb.r, rgb.g, rgb.b
+            ));
             close_tags.push(format!("</{prefix}>"));
         }
     }
@@ -237,15 +239,24 @@ mod tests {
         columns: usize,
         screen_lines: usize,
     }
-    
+
     impl Dimensions for TermSize {
-        fn total_lines(&self) -> usize { self.screen_lines }
-        fn screen_lines(&self) -> usize { self.screen_lines }
-        fn columns(&self) -> usize { self.columns }
+        fn total_lines(&self) -> usize {
+            self.screen_lines
+        }
+        fn screen_lines(&self) -> usize {
+            self.screen_lines
+        }
+        fn columns(&self) -> usize {
+            self.columns
+        }
     }
 
     fn new_term(rows: usize, cols: usize) -> Term<VoidListener> {
-        let size = TermSize { columns: cols, screen_lines: rows };
+        let size = TermSize {
+            columns: cols,
+            screen_lines: rows,
+        };
         Term::new(Config::default(), &size, VoidListener)
     }
 
