@@ -42,6 +42,13 @@ pub struct TuiResizeParams {
     pub cols: u16,
 }
 
+/// Parameters for `tui_take_screenshot` tool.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct TuiScreenshotParams {
+    /// The absolute path where the SVG screenshot should be saved.
+    pub output_path: String,
+}
+
 /// The `ShadowPTY` MCP Server holding the state manager.
 #[derive(Clone)]
 pub struct ShadowPtyServer {
@@ -60,7 +67,7 @@ impl ShadowPtyServer {
     /// Spawns a new process in a native pseudo-terminal (PTY) and initializes the screen buffer.
     #[tool(
         name = "tui_start",
-        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file."
+        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file. The command parameter must be the absolute path to the executable."
     )]
     pub async fn tui_start(
         &self,
@@ -162,13 +169,28 @@ impl ShadowPtyServer {
     /// Generates an SVG screenshot of the current terminal screen.
     #[tool(
         name = "tui_take_screenshot",
-        description = "Generates an SVG screenshot of the current terminal screen state using termsnap."
+        description = "Generates an SVG screenshot of the current terminal screen state using termsnap. The output_path parameter must be an absolute path."
     )]
-    pub async fn tui_take_screenshot(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+    pub async fn tui_take_screenshot(
+        &self,
+        Parameters(params): Parameters<TuiScreenshotParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.manager.take_screenshot().await {
-            Ok(svg_string) => Ok(CallToolResult::success(vec![
-                rmcp::model::ContentBlock::text(svg_string),
-            ])),
+            Ok(svg_string) => {
+                match tokio::fs::write(&params.output_path, svg_string).await {
+                    Ok(_) => Ok(CallToolResult::success(vec![
+                        rmcp::model::ContentBlock::text(format!(
+                            "Screenshot successfully saved to {}",
+                            params.output_path
+                        )),
+                    ])),
+                    Err(e) => Ok(CallToolResult::error(vec![
+                        rmcp::model::ContentBlock::text(format!(
+                            "Failed to write screenshot to file: {e:#}"
+                        )),
+                    ])),
+                }
+            }
             Err(e) => Ok(CallToolResult::error(vec![
                 rmcp::model::ContentBlock::text(format!("Failed to take screenshot: {e:#}")),
             ])),

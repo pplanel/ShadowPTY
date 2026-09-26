@@ -250,3 +250,39 @@ async fn test_stop_app_terminates_descendant_child_processes() {
         "Background sleep should also be terminated"
     );
 }
+
+#[tokio::test]
+async fn test_tui_take_screenshot_tool() {
+    use shadowpty::server::{ShadowPtyServer, TuiScreenshotParams};
+    use rmcp::handler::server::wrapper::Parameters;
+
+    let temp_dir = std::env::temp_dir();
+    let screenshot_path = temp_dir.join(format!("shadowpty_test_{}.svg", std::process::id()));
+    let output_path = screenshot_path.to_string_lossy().to_string();
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+
+    // Start a session
+    let args = vec!["-c".to_string(), "echo 'test screenshot tool'".to_string()];
+    let config = PtyConfig::new("sh", &args, 24, 80);
+    manager.start_app(&config).await.expect("start sh");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let params = TuiScreenshotParams {
+        output_path: output_path.clone(),
+    };
+    
+    // Call tool
+    let result = server.tui_take_screenshot(Parameters(params)).await.expect("tool call ok");
+    assert!(!result.is_error.unwrap_or(false));
+    
+    // Verify file exists and has SVG content
+    let content = std::fs::read_to_string(&screenshot_path).expect("read screenshot file");
+    assert!(content.contains("<svg"));
+    assert!(content.contains("test screenshot tool"));
+
+    // Cleanup
+    let _ = std::fs::remove_file(&screenshot_path);
+}
