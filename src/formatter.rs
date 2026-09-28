@@ -117,6 +117,10 @@ fn format_row(term: &Term<VoidListener>, row_idx: usize, cols: usize, output: &m
         }
 
         span_text.push(content);
+        // Combining marks (e.g. U+0301) live in the cell's zero-width list, not in `c`
+        if let Some(zerowidth) = cell.zerowidth() {
+            span_text.extend(zerowidth);
+        }
     }
 
     flush_span(&current_style, &span_text, output);
@@ -184,6 +188,26 @@ fn flush_span(style: &CellStyle, text: &str, output: &mut String) {
     }
 }
 
+/// Names of the 16 ANSI colors, indexed like `NamedColor` discriminants and 256-color indexes 0-15.
+const ANSI_COLOR_NAMES: [&str; 16] = [
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "bright-black",
+    "bright-red",
+    "bright-green",
+    "bright-yellow",
+    "bright-blue",
+    "bright-magenta",
+    "bright-cyan",
+    "bright-white",
+];
+
 fn append_color_tags(
     color: Color,
     prefix: &str,
@@ -193,30 +217,20 @@ fn append_color_tags(
     match color {
         Color::Named(NamedColor::Foreground | NamedColor::Background) => {}
         Color::Named(named) => {
-            let name = match named {
-                NamedColor::Black => "black",
-                NamedColor::Red => "red",
-                NamedColor::Green => "green",
-                NamedColor::Yellow => "yellow",
-                NamedColor::Blue => "blue",
-                NamedColor::Magenta => "magenta",
-                NamedColor::Cyan => "cyan",
-                NamedColor::White => "white",
-                NamedColor::BrightBlack => "bright-black",
-                NamedColor::BrightRed => "bright-red",
-                NamedColor::BrightGreen => "bright-green",
-                NamedColor::BrightYellow => "bright-yellow",
-                NamedColor::BrightBlue => "bright-blue",
-                NamedColor::BrightMagenta => "bright-magenta",
-                NamedColor::BrightCyan => "bright-cyan",
-                NamedColor::BrightWhite => "bright-white",
-                _ => "unknown",
-            };
+            let name = ANSI_COLOR_NAMES
+                .get(named as usize)
+                .copied()
+                .unwrap_or("unknown");
             open_tags.push(format!("<{prefix}:{name}>"));
             close_tags.push(format!("</{prefix}>"));
         }
+        // Indexes 0-15 are the same ANSI colors as `Named`, so `38;5;1` and `31` both render as red
         Color::Indexed(idx) => {
-            open_tags.push(format!("<{prefix}:idx:{idx}>"));
+            if let Some(name) = ANSI_COLOR_NAMES.get(usize::from(idx)) {
+                open_tags.push(format!("<{prefix}:{name}>"));
+            } else {
+                open_tags.push(format!("<{prefix}:idx:{idx}>"));
+            }
             close_tags.push(format!("</{prefix}>"));
         }
         Color::Spec(rgb) => {
@@ -294,5 +308,29 @@ mod tests {
         parser.advance(&mut term, b"Line 1\r\nLine 2");
         let formatted = format_screen(&term);
         assert_eq!(formatted, "Line 1\nLine 2");
+    }
+
+    #[test]
+    fn test_combining_characters() {
+        let mut term = new_term(3, 20);
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+        parser.advance(&mut term, "cafe\u{301} ok".as_bytes());
+        let formatted = format_screen(&term);
+        assert_eq!(formatted, "cafe\u{301} ok");
+    }
+
+    #[test]
+    fn test_indexed_ansi_colors_use_names() {
+        let mut term = new_term(3, 20);
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+        parser.advance(
+            &mut term,
+            b"\x1b[38;5;1mA\x1b[38;5;14mB\x1b[38;5;208mC\x1b[0m",
+        );
+        let formatted = format_screen(&term);
+        assert_eq!(
+            formatted,
+            "<fg:red>A</fg><fg:bright-cyan>B</fg><fg:idx:208>C</fg>"
+        );
     }
 }
