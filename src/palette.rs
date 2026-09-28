@@ -1,8 +1,10 @@
 //! Terminal color palette and resolution according to ANSI and `XTerm` standards.
 //!
 //! Provides the base 16 ANSI colors, the 6×6×6 color cube (indices 16–231),
-//! the 24-step grayscale ramp (indices 232–255), and default canvas colors.
+//! the 24-step grayscale ramp (indices 232–255), default canvas colors,
+//! and resolution of dynamic app overrides (OSC 4, OSC 10, OSC 11, OSC 12).
 
+pub use alacritty_terminal::term::color::Colors;
 pub use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
 /// Creates an [`Rgb`] color from individual red, green, and blue components.
@@ -178,9 +180,186 @@ impl BasePalette {
     }
 }
 
+const fn base_color_for_dim(dim: NamedColor) -> Option<NamedColor> {
+    match dim {
+        NamedColor::DimBlack => Some(NamedColor::Black),
+        NamedColor::DimRed => Some(NamedColor::Red),
+        NamedColor::DimGreen => Some(NamedColor::Green),
+        NamedColor::DimYellow => Some(NamedColor::Yellow),
+        NamedColor::DimBlue => Some(NamedColor::Blue),
+        NamedColor::DimMagenta => Some(NamedColor::Magenta),
+        NamedColor::DimCyan => Some(NamedColor::Cyan),
+        NamedColor::DimWhite => Some(NamedColor::White),
+        NamedColor::DimForeground => Some(NamedColor::Foreground),
+        _ => None,
+    }
+}
+
+/// Terminal color resolver combining a [`BasePalette`] with dynamic app overrides.
+///
+/// Handles entries set by applications via OSC 4 (indexed colors), OSC 10 (text foreground),
+/// OSC 11 (text background), and OSC 12 (text cursor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Palette {
+    base: BasePalette,
+}
+
+impl Palette {
+    /// Creates a new resolver with the specified base palette.
+    #[must_use]
+    pub const fn new(base: BasePalette) -> Self {
+        Self { base }
+    }
+
+    /// Returns a reference to the underlying base palette.
+    #[must_use]
+    pub const fn base(&self) -> &BasePalette {
+        &self.base
+    }
+
+    /// Resolves a [`NamedColor`] taking into account any overrides in `overrides`.
+    #[must_use]
+    pub fn resolve_named(&self, named: NamedColor, overrides: Option<&Colors>) -> Rgb {
+        if let Some(colors) = overrides {
+            if let Some(rgb) = colors[named] {
+                return rgb;
+            }
+            if let Some(base_rgb) = base_color_for_dim(named).and_then(|b| colors[b]) {
+                return scale_rgb_const(base_rgb, 66);
+            }
+        }
+        self.base.named(named)
+    }
+
+    /// Resolves an indexed color (`0..=255`) taking into account any overrides in `overrides`.
+    #[must_use]
+    pub fn resolve_indexed(&self, index: u8, overrides: Option<&Colors>) -> Rgb {
+        if let Some(rgb) = overrides.and_then(|c| c[index as usize]) {
+            return rgb;
+        }
+        self.base.indexed(index)
+    }
+
+    /// Resolves any [`Color`] (Named, Indexed, or Spec) taking into account any overrides in `overrides`.
+    #[must_use]
+    pub fn resolve_color(&self, color: Color, overrides: Option<&Colors>) -> Rgb {
+        match color {
+            Color::Named(named) => self.resolve_named(named, overrides),
+            Color::Indexed(idx) => self.resolve_indexed(idx, overrides),
+            Color::Spec(rgb) => rgb,
+        }
+    }
+
+    /// Resolves the effective background color.
+    #[must_use]
+    pub fn resolve_background(&self, overrides: Option<&Colors>) -> Rgb {
+        self.resolve_named(NamedColor::Background, overrides)
+    }
+
+    /// Resolves the effective foreground color.
+    #[must_use]
+    pub fn resolve_foreground(&self, overrides: Option<&Colors>) -> Rgb {
+        self.resolve_named(NamedColor::Foreground, overrides)
+    }
+
+    /// Resolves the effective cursor color.
+    #[must_use]
+    pub fn resolve_cursor(&self, overrides: Option<&Colors>) -> Rgb {
+        self.resolve_named(NamedColor::Cursor, overrides)
+    }
+}
+
+/// A color resolver bound to a specific terminal's dynamic colors.
+#[derive(Clone, Copy)]
+pub struct TermPalette<'a> {
+    palette: &'a Palette,
+    colors: &'a Colors,
+}
+
+impl std::fmt::Debug for TermPalette<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TermPalette")
+            .field("palette", &self.palette)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> TermPalette<'a> {
+    /// Binds a [`Palette`] to a terminal's active dynamic [`Colors`].
+    #[must_use]
+    pub const fn new(palette: &'a Palette, colors: &'a Colors) -> Self {
+        Self { palette, colors }
+    }
+
+    /// Resolves any [`Color`] (Named, Indexed, or Spec) against the bound terminal colors.
+    #[must_use]
+    pub fn resolve(&self, color: Color) -> Rgb {
+        self.palette.resolve_color(color, Some(self.colors))
+    }
+
+    /// Resolves a [`NamedColor`] against the bound terminal colors.
+    #[must_use]
+    pub fn resolve_named(&self, named: NamedColor) -> Rgb {
+        self.palette.resolve_named(named, Some(self.colors))
+    }
+
+    /// Resolves an indexed color (`0..=255`) against the bound terminal colors.
+    #[must_use]
+    pub fn resolve_indexed(&self, index: u8) -> Rgb {
+        self.palette.resolve_indexed(index, Some(self.colors))
+    }
+
+    /// Resolves the terminal's active background color.
+    #[must_use]
+    pub fn background(&self) -> Rgb {
+        self.palette.resolve_background(Some(self.colors))
+    }
+
+    /// Resolves the terminal's active foreground color.
+    #[must_use]
+    pub fn foreground(&self) -> Rgb {
+        self.palette.resolve_foreground(Some(self.colors))
+    }
+
+    /// Resolves the terminal's active cursor color.
+    #[must_use]
+    pub fn cursor(&self) -> Rgb {
+        self.palette.resolve_cursor(Some(self.colors))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::term::{Config, Term};
+    use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+
+    struct TestTermSize {
+        columns: usize,
+        screen_lines: usize,
+    }
+
+    impl Dimensions for TestTermSize {
+        fn total_lines(&self) -> usize {
+            self.screen_lines
+        }
+        fn screen_lines(&self) -> usize {
+            self.screen_lines
+        }
+        fn columns(&self) -> usize {
+            self.columns
+        }
+    }
+
+    fn new_test_term() -> Term<VoidListener> {
+        let size = TestTermSize {
+            columns: 80,
+            screen_lines: 24,
+        };
+        Term::new(Config::default(), &size, VoidListener)
+    }
 
     #[test]
     fn test_ansi_named_colors() {
@@ -268,5 +447,105 @@ mod tests {
         let c = rgb(100, 200, 50);
         let scaled = scale_rgb(c, 0.5);
         assert_eq!(scaled, rgb(50, 100, 25));
+    }
+
+    #[test]
+    fn test_osc4_indexed_color_override() {
+        let mut term = new_test_term();
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+
+        // Initially index 1 (Red) is the base palette red
+        let palette = Palette::default();
+        let term_palette = TermPalette::new(&palette, term.colors());
+        assert_eq!(
+            term_palette.resolve(Color::Indexed(1)),
+            rgb(0xcd, 0x00, 0x00)
+        );
+        assert_eq!(
+            term_palette.resolve(Color::Named(NamedColor::Red)),
+            rgb(0xcd, 0x00, 0x00)
+        );
+
+        // App overrides color 1 via OSC 4 to custom #112233
+        parser.advance(&mut term, b"\x1b]4;1;#112233\x1b\\");
+
+        let term_palette = TermPalette::new(&palette, term.colors());
+        assert_eq!(
+            term_palette.resolve(Color::Indexed(1)),
+            rgb(0x11, 0x22, 0x33)
+        );
+        assert_eq!(
+            term_palette.resolve(Color::Named(NamedColor::Red)),
+            rgb(0x11, 0x22, 0x33)
+        );
+
+        // Other colors (e.g. index 2 Green) remain unchanged
+        assert_eq!(
+            term_palette.resolve(Color::Indexed(2)),
+            rgb(0x00, 0xcd, 0x00)
+        );
+    }
+
+    #[test]
+    fn test_osc10_foreground_and_osc11_background_override() {
+        let mut term = new_test_term();
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+
+        let palette = Palette::default();
+        let term_palette = TermPalette::new(&palette, term.colors());
+        assert_eq!(term_palette.foreground(), DEFAULT_FOREGROUND);
+        assert_eq!(term_palette.background(), DEFAULT_BACKGROUND);
+
+        // App overrides foreground to #aabbcc (OSC 10) and background to #443322 (OSC 11)
+        parser.advance(&mut term, b"\x1b]10;#aabbcc\x1b\\\x1b]11;#443322\x1b\\");
+
+        let term_palette = TermPalette::new(&palette, term.colors());
+        assert_eq!(term_palette.foreground(), rgb(0xaa, 0xbb, 0xcc));
+        assert_eq!(term_palette.background(), rgb(0x44, 0x33, 0x22));
+        assert_eq!(
+            term_palette.resolve(Color::Named(NamedColor::Foreground)),
+            rgb(0xaa, 0xbb, 0xcc)
+        );
+        assert_eq!(
+            term_palette.resolve(Color::Named(NamedColor::Background)),
+            rgb(0x44, 0x33, 0x22)
+        );
+    }
+
+    #[test]
+    fn test_osc12_cursor_override() {
+        let mut term = new_test_term();
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+
+        let palette = Palette::default();
+        let term_palette = TermPalette::new(&palette, term.colors());
+        assert_eq!(term_palette.cursor(), DEFAULT_CURSOR);
+
+        // App overrides cursor to #ffaa00 (OSC 12)
+        parser.advance(&mut term, b"\x1b]12;#ffaa00\x1b\\");
+
+        let term_palette = TermPalette::new(&palette, term.colors());
+        assert_eq!(term_palette.cursor(), rgb(0xff, 0xaa, 0x00));
+        assert_eq!(
+            term_palette.resolve(Color::Named(NamedColor::Cursor)),
+            rgb(0xff, 0xaa, 0x00)
+        );
+    }
+
+    #[test]
+    fn test_dim_scaling_with_overridden_base_color() {
+        let mut term = new_test_term();
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+
+        let palette = Palette::default();
+
+        // Override color 1 (Red) to #ff0000
+        parser.advance(&mut term, b"\x1b]4;1;#ff0000\x1b\\");
+
+        let term_palette = TermPalette::new(&palette, term.colors());
+        // DimRed should scale the overridden Red (#ff0000) by 66%
+        let dim_red = term_palette.resolve(Color::Named(NamedColor::DimRed));
+        let expected_r = u8::try_from((255u32 * 66) / 100).unwrap();
+        assert_eq!(dim_red, rgb(expected_r, 0, 0));
     }
 }
