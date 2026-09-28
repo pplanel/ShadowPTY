@@ -152,6 +152,12 @@ impl SessionOutput {
         self.bump();
     }
 
+    /// Wakes waiters when the screen changed without new output, e.g. when a synchronized
+    /// update is flushed on timeout.
+    pub fn notify_screen_changed(&self) {
+        self.bump();
+    }
+
     /// Marks the stream as ended (the process closed the PTY) and wakes waiters.
     pub fn close(&self) {
         self.state().eof = true;

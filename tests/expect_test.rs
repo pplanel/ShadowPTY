@@ -295,3 +295,26 @@ async fn test_expect_and_script_tools() {
     assert!(text.contains("tool-output"), "{text}");
     manager.stop_app().await.expect("stop");
 }
+
+#[tokio::test]
+async fn test_unterminated_sync_frame_is_flushed() {
+    let manager = PtyManager::new();
+    // Opens a synchronized update (DECSET 2026) and never closes it, like an app that crashes
+    // mid-frame
+    let args = vec![
+        "-c".to_string(),
+        r"printf '\033[?2026hMID_FRAME'; sleep 5".to_string(),
+    ];
+    manager
+        .start_app(&PtyConfig::new("sh", &args, 43, 155))
+        .await
+        .expect("start sh");
+
+    let started = Instant::now();
+    manager
+        .expect(&expectation("MID_FRAME", ExpectTarget::Screen, 2_000))
+        .await
+        .expect("frame flushed to the screen");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    manager.stop_app().await.expect("stop");
+}

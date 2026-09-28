@@ -17,6 +17,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::tty::{self, Options, Pty, Shell};
 use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 
 struct TermSize {
@@ -689,6 +690,15 @@ fn run_pty_reader(mut reader: File, sinks: &ReaderSinks) {
     let mut parser: Processor<StdSyncHandler> = Processor::new();
 
     while !shutdown_flag.load(Ordering::Relaxed) {
+        // An app that opens a synchronized update (DECSET 2026) and never closes it would freeze
+        // the screen, so flush the frame once its deadline passes, as alacritty's event loop does
+        if let Some(deadline) = parser.sync_timeout().sync_timeout()
+            && !wait_readable(&reader, deadline)
+        {
+            parser.stop_sync(&mut *lock_terminal(terminal));
+            output.notify_screen_changed();
+            continue;
+        }
         match reader.read(&mut buffer) {
             Ok(0) => {
                 tracing::debug!("PTY reader reached EOF");
@@ -714,6 +724,23 @@ fn run_pty_reader(mut reader: File, sinks: &ReaderSinks) {
         }
     }
     output.close();
+}
+
+/// Waits until `reader` has data or `deadline` passes. Returns `false` on timeout.
+fn wait_readable(reader: &File, deadline: std::time::Instant) -> bool {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let Ok(timeout) = Timespec::try_from(remaining) else {
+        return true;
+    };
+    let mut fds = [PollFd::new(reader, PollFlags::IN)];
+    loop {
+        match poll(&mut fds, Some(&timeout)) {
+            Ok(ready) => return ready > 0,
+            Err(rustix::io::Errno::INTR) => {}
+            // Let the blocking read surface the error
+            Err(_) => return true,
+        }
+    }
 }
 
 #[cfg(test)]
