@@ -9,7 +9,7 @@ use base64::prelude::*;
 use fontdue::{Font, FontSettings};
 
 use crate::palette::{Rgb, Underline, rgb};
-use crate::snapshot::{CursorShape, SnapCell, SnapCursor, Snapshot};
+use crate::screen::{CursorShape, Screen, ScreenCell, ScreenCursor};
 
 static FONT_REGULAR_BYTES: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 static FONT_BOLD_BYTES: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
@@ -164,20 +164,20 @@ impl<'a> Canvas<'a> {
     }
 }
 
-/// Renders a [`Snapshot`] into PNG bytes using default options (scale 1x).
-pub fn render_png_default(snapshot: &Snapshot) -> Result<Vec<u8>, anyhow::Error> {
-    render_png(snapshot, PngOptions::default())
+/// Renders a [`Screen`] into PNG bytes using default options (scale 1x).
+pub fn render_png_default(screen: &Screen) -> Result<Vec<u8>, anyhow::Error> {
+    render_png(screen, PngOptions::default())
 }
 
-/// Renders a [`Snapshot`] into PNG bytes.
-pub fn render_png(snapshot: &Snapshot, options: PngOptions) -> Result<Vec<u8>, anyhow::Error> {
+/// Renders a [`Screen`] into PNG bytes.
+pub fn render_png(screen: &Screen, options: PngOptions) -> Result<Vec<u8>, anyhow::Error> {
     let scale = options.scale.clamp(1, 4);
     let scale_usize = usize::from(scale);
     let cell_width = 9 * scale_usize;
     let cell_height = 18 * scale_usize;
 
-    let img_width = usize::from(snapshot.cols) * cell_width;
-    let img_height = usize::from(snapshot.rows) * cell_height;
+    let img_width = usize::from(screen.cols) * cell_width;
+    let img_height = usize::from(screen.rows) * cell_height;
 
     if img_width == 0 || img_height == 0 {
         return Ok(Vec::new());
@@ -186,10 +186,10 @@ pub fn render_png(snapshot: &Snapshot, options: PngOptions) -> Result<Vec<u8>, a
     let mut pixels = vec![0u8; img_width * img_height * 3];
     let mut canvas = Canvas::new(&mut pixels, img_width, scale);
 
-    draw_backgrounds(&mut canvas, snapshot);
-    draw_cells(&mut canvas, snapshot);
+    draw_backgrounds(&mut canvas, screen);
+    draw_cells(&mut canvas, screen);
 
-    if let Some(cursor) = snapshot.cursor {
+    if let Some(cursor) = screen.cursor {
         draw_cursor(&mut canvas, cursor, options.cursor_color);
     }
 
@@ -197,10 +197,10 @@ pub fn render_png(snapshot: &Snapshot, options: PngOptions) -> Result<Vec<u8>, a
 }
 
 /// Fills cell background rectangles.
-fn draw_backgrounds(canvas: &mut Canvas<'_>, snapshot: &Snapshot) {
-    for row in 0..snapshot.rows {
-        for col in 0..snapshot.cols {
-            if let Some(cell) = snapshot.cell(row, col) {
+fn draw_backgrounds(canvas: &mut Canvas<'_>, screen: &Screen) {
+    for row in 0..screen.rows {
+        for col in 0..screen.cols {
+            if let Some(cell) = screen.cell(row, col) {
                 let x0 = usize::from(col) * canvas.cell_w;
                 let y0 = usize::from(row) * canvas.cell_h;
                 canvas.fill_rect(
@@ -218,10 +218,10 @@ fn draw_backgrounds(canvas: &mut Canvas<'_>, snapshot: &Snapshot) {
 }
 
 /// Draws glyphs, box characters, and decorations for all cells.
-fn draw_cells(canvas: &mut Canvas<'_>, snapshot: &Snapshot) {
-    for row in 0..snapshot.rows {
-        for col in 0..snapshot.cols {
-            let Some(cell) = snapshot.cell(row, col) else {
+fn draw_cells(canvas: &mut Canvas<'_>, screen: &Screen) {
+    for row in 0..screen.rows {
+        for col in 0..screen.cols {
+            let Some(cell) = screen.cell(row, col) else {
                 continue;
             };
 
@@ -266,7 +266,7 @@ fn draw_cells(canvas: &mut Canvas<'_>, snapshot: &Snapshot) {
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss
 )]
-fn draw_text(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &SnapCell) {
+fn draw_text(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &ScreenCell) {
     let font = if cell.bold {
         &*FONT_BOLD
     } else {
@@ -386,7 +386,7 @@ const fn box_connections(ch: char) -> (u8, bool) {
 }
 
 /// Procedural box-drawing implementation ensuring zero gaps at cell boundaries.
-fn draw_box_drawing(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &SnapCell) {
+fn draw_box_drawing(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &ScreenCell) {
     let ch = cell.text.chars().next().unwrap_or(' ');
     let (dirs, heavy) = box_connections(ch);
     let scale = usize::from(canvas.scale);
@@ -449,7 +449,7 @@ fn draw_box_drawing(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &SnapCell
 }
 
 /// Procedural block elements (U+2580–U+259F).
-fn draw_block_element(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &SnapCell) {
+fn draw_block_element(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &ScreenCell) {
     let ch = cell.text.chars().next().unwrap_or(' ');
     let w = canvas.cell_w;
     let h = canvas.cell_h;
@@ -487,7 +487,7 @@ fn draw_block_element(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &SnapCe
 }
 
 /// Draws an underline style.
-fn draw_underline(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &SnapCell) {
+fn draw_underline(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &ScreenCell) {
     let scale = usize::from(canvas.scale);
     let x0 = usize::from(col) * canvas.cell_w;
     let y0 = usize::from(row) * canvas.cell_h;
@@ -565,7 +565,7 @@ fn draw_underline(canvas: &mut Canvas<'_>, col: u16, row: u16, cell: &SnapCell) 
 }
 
 /// Renders the cursor in the pixel buffer.
-fn draw_cursor(canvas: &mut Canvas<'_>, cursor: SnapCursor, cursor_color: Rgb) {
+fn draw_cursor(canvas: &mut Canvas<'_>, cursor: ScreenCursor, cursor_color: Rgb) {
     let scale = usize::from(canvas.scale);
     let x0 = usize::from(cursor.col) * canvas.cell_w;
     let y0 = usize::from(cursor.row) * canvas.cell_h;
@@ -645,22 +645,18 @@ mod tests {
     use super::*;
     use crate::palette::DEFAULT_FOREGROUND;
 
-    fn make_test_snapshot(rows: u16, cols: u16, text: &str) -> Snapshot {
+    fn make_test_screen(rows: u16, cols: u16, text: &str) -> Screen {
         let total = usize::from(rows) * usize::from(cols);
         let mut cells = Vec::with_capacity(total);
         for _ in 0..total {
-            cells.push(SnapCell {
+            cells.push(ScreenCell {
                 text: text.to_string(),
-                wide: false,
                 fg: DEFAULT_FOREGROUND,
                 bg: crate::palette::DEFAULT_BACKGROUND,
-                bold: false,
-                italic: false,
-                underline: Underline::None,
-                strikethrough: false,
+                ..Default::default()
             });
         }
-        Snapshot {
+        Screen {
             rows,
             cols,
             cells,
@@ -670,8 +666,8 @@ mod tests {
 
     #[test]
     fn test_render_png_header_and_dimensions() {
-        let snap = make_test_snapshot(10, 20, "A");
-        let png_bytes = render_png(&snap, PngOptions::default()).expect("valid png");
+        let screen = make_test_screen(10, 20, "A");
+        let png_bytes = render_png(&screen, PngOptions::default()).expect("valid png");
 
         // Check PNG signature: 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'
         assert_eq!(
@@ -692,9 +688,9 @@ mod tests {
 
     #[test]
     fn test_render_png_scale_2x() {
-        let snap = make_test_snapshot(5, 10, "X");
+        let screen = make_test_screen(5, 10, "X");
         let png_bytes = render_png(
-            &snap,
+            &screen,
             PngOptions {
                 scale: 2,
                 ..Default::default()
@@ -714,20 +710,20 @@ mod tests {
 
     #[test]
     fn test_render_png_box_drawing_and_blocks() {
-        let mut snap = make_test_snapshot(2, 4, " ");
-        snap.cells[0].text = "─".to_string();
-        snap.cells[1].text = "│".to_string();
-        snap.cells[2].text = "█".to_string();
-        snap.cells[3].text = "▄".to_string();
+        let mut screen = make_test_screen(2, 4, " ");
+        screen.cells[0].text = "─".to_string();
+        screen.cells[1].text = "│".to_string();
+        screen.cells[2].text = "█".to_string();
+        screen.cells[3].text = "▄".to_string();
 
-        let png_bytes = render_png_default(&snap).expect("valid png");
+        let png_bytes = render_png_default(&screen).expect("valid png");
         assert!(!png_bytes.is_empty());
     }
 
     #[test]
     fn test_png_to_base64() {
-        let snap = make_test_snapshot(2, 2, "Z");
-        let png_bytes = render_png_default(&snap).expect("png");
+        let screen = make_test_screen(2, 2, "Z");
+        let png_bytes = render_png_default(&screen).expect("png");
         let b64 = png_to_base64(&png_bytes);
         assert!(b64.starts_with("iVBORw0KGgo")); // Standard base64 PNG header
     }

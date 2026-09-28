@@ -40,11 +40,10 @@ impl Dimensions for TermSize {
     }
 }
 
-use crate::formatter::{format_screen, screen_text};
 use crate::input::parse_input_keys;
 use crate::output::{Pattern, SessionOutput};
 use crate::recorder::{AsciicastRecorder, SharedRecorder};
-use crate::snapshot::Snapshot;
+use crate::screen::Screen;
 
 /// Session id used when a tool call doesn't specify one.
 pub const DEFAULT_SESSION_ID: &str = "default";
@@ -434,13 +433,21 @@ impl PtyManager {
         match target {
             ExpectTarget::Screen => output
                 .wait_for(*timeout, || {
-                    pattern.find_in(&screen_text(&lock_terminal(&terminal)))
+                    let screen = {
+                        let term = lock_terminal(&terminal);
+                        Screen::capture(&term)
+                    };
+                    pattern.find_in(&screen.to_plain_text())
                 })
                 .await
                 .map_err(|e| {
-                    let screen = screen_text(&lock_terminal(&terminal));
+                    let screen = {
+                        let term = lock_terminal(&terminal);
+                        Screen::capture(&term)
+                    };
+                    let text = screen.to_plain_text();
                     anyhow::anyhow!(
-                        "pattern '{}' not found on screen: {e}. Current screen:\n{screen}",
+                        "pattern '{}' not found on screen: {e}. Current screen:\n{text}",
                         pattern.source()
                     )
                 }),
@@ -632,11 +639,14 @@ impl PtyManager {
             })
             .await?;
 
-        // The reader pushes output while holding the terminal lock, so the screen and the
-        // read position are consistent here
-        let terminal = lock_terminal(&terminal);
-        output.mark_all_read();
-        Ok(format_screen(&terminal))
+        // The reader pushes output while holding the terminal lock, so capture and advance
+        // under the lock, then drop immediately
+        let screen = {
+            let term = lock_terminal(&terminal);
+            output.mark_all_read();
+            Screen::capture(&term)
+        };
+        Ok(screen.to_tagged_text())
     }
 
     /// Reads the default session screen.
@@ -645,19 +655,20 @@ impl PtyManager {
     }
 
     /// Takes a detached screen snapshot of the target session.
-    pub async fn snapshot_session(&self, session_id: &str) -> Result<Snapshot> {
+    pub async fn snapshot_session(&self, session_id: &str) -> Result<Screen> {
         let terminal = self
             .with_session(session_id, |s| Arc::clone(&s.terminal))
             .await?;
 
-        let terminal = lock_terminal(&terminal);
-        let snapshot = Snapshot::from_term(&terminal);
-        drop(terminal);
-        Ok(snapshot)
+        let screen = {
+            let term = lock_terminal(&terminal);
+            Screen::capture(&term)
+        };
+        Ok(screen)
     }
 
     /// Takes a detached screen snapshot of the default session.
-    pub async fn snapshot(&self) -> Result<Snapshot> {
+    pub async fn snapshot(&self) -> Result<Screen> {
         self.snapshot_session(DEFAULT_SESSION_ID).await
     }
 

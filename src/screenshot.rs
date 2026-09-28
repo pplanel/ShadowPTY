@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use crate::palette::{Rgb, Underline, rgb, to_hex};
-use crate::snapshot::{CursorShape, SnapCursor, Snapshot};
+use crate::screen::{CursorShape, Screen, ScreenCursor};
 
 /// Theme configuration for SVG rendering.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,23 +39,23 @@ impl Default for Theme {
     }
 }
 
-/// Renders a [`Snapshot`] to an SVG string using the default theme.
+/// Renders a [`Screen`] to an SVG string using the default theme.
 #[must_use]
-pub fn render_svg_default(snapshot: &Snapshot) -> String {
-    render_svg(snapshot, &Theme::default())
+pub fn render_svg_default(screen: &Screen) -> String {
+    render_svg(screen, &Theme::default())
 }
 
-/// Renders a [`Snapshot`] to a deterministic SVG string.
+/// Renders a [`Screen`] to a deterministic SVG string.
 #[must_use]
-pub fn render_svg(snapshot: &Snapshot, theme: &Theme) -> String {
-    let total_width = f64::from(snapshot.cols) * theme.cell_width;
-    let total_height = f64::from(snapshot.rows) * theme.cell_height;
+pub fn render_svg(screen: &Screen, theme: &Theme) -> String {
+    let total_width = f64::from(screen.cols) * theme.cell_width;
+    let total_height = f64::from(screen.rows) * theme.cell_height;
 
     // Find the most frequent background color to use as canvas fill
-    let canvas_bg = find_dominant_bg(snapshot);
+    let canvas_bg = find_dominant_bg(screen);
     let canvas_bg_hex = to_hex(canvas_bg);
 
-    let mut svg = String::with_capacity(snapshot.cells.len() * 32 + 512);
+    let mut svg = String::with_capacity(screen.cells.len() * 32 + 512);
 
     let _ = writeln!(
         svg,
@@ -76,13 +76,13 @@ pub fn render_svg(snapshot: &Snapshot, theme: &Theme) -> String {
     );
 
     // Render non-canvas background rects (grouped by horizontal run)
-    render_background_rects(snapshot, theme, canvas_bg, &mut svg);
+    render_background_rects(screen, theme, canvas_bg, &mut svg);
 
     // Render text runs, underlines, and strikethroughs
-    render_content(snapshot, theme, &mut svg);
+    render_content(screen, theme, &mut svg);
 
     // Render cursor if visible
-    if let Some(cursor) = snapshot.cursor {
+    if let Some(cursor) = screen.cursor {
         render_cursor(cursor, theme, &mut svg);
     }
 
@@ -90,14 +90,14 @@ pub fn render_svg(snapshot: &Snapshot, theme: &Theme) -> String {
     svg
 }
 
-/// Finds the most frequent background color across all snapshot cells.
-fn find_dominant_bg(snapshot: &Snapshot) -> Rgb {
-    if snapshot.cells.is_empty() {
+/// Finds the most frequent background color across all screen cells.
+fn find_dominant_bg(screen: &Screen) -> Rgb {
+    if screen.cells.is_empty() {
         return crate::palette::DEFAULT_BACKGROUND;
     }
 
     let mut counts: HashMap<(u8, u8, u8), usize> = HashMap::new();
-    for cell in &snapshot.cells {
+    for cell in &screen.cells {
         *counts.entry((cell.bg.r, cell.bg.g, cell.bg.b)).or_default() += 1;
     }
 
@@ -113,18 +113,18 @@ fn find_dominant_bg(snapshot: &Snapshot) -> Rgb {
 }
 
 /// Renders horizontal runs of non-default background rectangles.
-fn render_background_rects(snapshot: &Snapshot, theme: &Theme, canvas_bg: Rgb, svg: &mut String) {
-    for row in 0..snapshot.rows {
+fn render_background_rects(screen: &Screen, theme: &Theme, canvas_bg: Rgb, svg: &mut String) {
+    for row in 0..screen.rows {
         let mut col = 0;
-        while col < snapshot.cols {
-            let Some(cell) = snapshot.cell(row, col) else {
+        while col < screen.cols {
+            let Some(cell) = screen.cell(row, col) else {
                 break;
             };
 
             let bg = cell.bg;
             let run_start = col;
-            while col < snapshot.cols {
-                if let Some(next_cell) = snapshot.cell(row, col)
+            while col < screen.cols {
+                if let Some(next_cell) = screen.cell(row, col)
                     && next_cell.bg == bg
                 {
                     col += 1;
@@ -169,11 +169,11 @@ struct UnderlineRenderRequest {
 }
 
 /// Renders text runs and decoration lines (underlines, strikethroughs).
-fn render_content(snapshot: &Snapshot, theme: &Theme, svg: &mut String) {
-    for row in 0..snapshot.rows {
+fn render_content(screen: &Screen, theme: &Theme, svg: &mut String) {
+    for row in 0..screen.rows {
         let mut col = 0;
-        while col < snapshot.cols {
-            let Some(start_cell) = snapshot.cell(row, col) else {
+        while col < screen.cols {
+            let Some(start_cell) = screen.cell(row, col) else {
                 break;
             };
 
@@ -188,8 +188,8 @@ fn render_content(snapshot: &Snapshot, theme: &Theme, svg: &mut String) {
             let run_start = col;
             let mut run_text = String::new();
 
-            while col < snapshot.cols {
-                if let Some(next_cell) = snapshot.cell(row, col) {
+            while col < screen.cols {
+                if let Some(next_cell) = screen.cell(row, col) {
                     let next_style = TextRunStyle {
                         fg: next_cell.fg,
                         bold: next_cell.bold,
@@ -328,7 +328,7 @@ fn render_underline(req: UnderlineRenderRequest, theme: &Theme, svg: &mut String
 }
 
 /// Renders the cursor based on its shape and viewport position.
-fn render_cursor(cursor: SnapCursor, theme: &Theme, svg: &mut String) {
+fn render_cursor(cursor: ScreenCursor, theme: &Theme, svg: &mut String) {
     let x = f64::from(cursor.col) * theme.cell_width;
     let y = f64::from(cursor.row) * theme.cell_height;
     let cursor_hex = to_hex(theme.cursor_color);
@@ -394,24 +394,20 @@ fn escape_xml_text(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::palette::DEFAULT_FOREGROUND;
-    use crate::snapshot::{SnapCell, SnapCursor};
+    use crate::screen::{ScreenCell, ScreenCursor};
 
-    fn make_test_snapshot(rows: u16, cols: u16, fill_char: char) -> Snapshot {
+    fn make_test_screen(rows: u16, cols: u16, fill_char: char) -> Screen {
         let total = usize::from(rows) * usize::from(cols);
         let mut cells = Vec::with_capacity(total);
         for _ in 0..total {
-            cells.push(SnapCell {
+            cells.push(ScreenCell {
                 text: fill_char.to_string(),
-                wide: false,
                 fg: DEFAULT_FOREGROUND,
                 bg: crate::palette::DEFAULT_BACKGROUND,
-                bold: false,
-                italic: false,
-                underline: Underline::None,
-                strikethrough: false,
+                ..Default::default()
             });
         }
-        Snapshot {
+        Screen {
             rows,
             cols,
             cells,
@@ -421,19 +417,19 @@ mod tests {
 
     #[test]
     fn test_svg_deterministic_output() {
-        let snap = make_test_snapshot(3, 10, 'x');
+        let screen = make_test_screen(3, 10, 'x');
         let theme = Theme::default();
 
-        let svg1 = render_svg(&snap, &theme);
-        let svg2 = render_svg(&snap, &theme);
+        let svg1 = render_svg(&screen, &theme);
+        let svg2 = render_svg(&screen, &theme);
         assert_eq!(svg1, svg2, "SVG output must be strictly deterministic");
     }
 
     #[test]
     fn test_svg_contains_xml_and_styles() {
-        let snap = make_test_snapshot(2, 5, 'a');
+        let screen = make_test_screen(2, 5, 'a');
         let theme = Theme::default();
-        let svg = render_svg(&snap, &theme);
+        let svg = render_svg(&screen, &theme);
 
         assert!(svg.starts_with("<svg xmlns="));
         assert!(svg.ends_with("</svg>\n"));
@@ -443,13 +439,13 @@ mod tests {
 
     #[test]
     fn test_svg_escapes_special_characters() {
-        let mut snap = make_test_snapshot(1, 4, ' ');
-        snap.cells[0].text = "<".to_string();
-        snap.cells[1].text = ">".to_string();
-        snap.cells[2].text = "&".to_string();
-        snap.cells[3].text = "\"".to_string();
+        let mut screen = make_test_screen(1, 4, ' ');
+        screen.cells[0].text = "<".to_string();
+        screen.cells[1].text = ">".to_string();
+        screen.cells[2].text = "&".to_string();
+        screen.cells[3].text = "\"".to_string();
 
-        let svg = render_svg(&snap, &Theme::default());
+        let svg = render_svg(&screen, &Theme::default());
         assert!(svg.contains("&lt;"));
         assert!(svg.contains("&gt;"));
         assert!(svg.contains("&amp;"));
@@ -459,41 +455,41 @@ mod tests {
 
     #[test]
     fn test_svg_renders_cursor_block_underline_beam() {
-        let mut snap = make_test_snapshot(2, 5, ' ');
-        snap.cursor = Some(SnapCursor {
+        let mut screen = make_test_screen(2, 5, ' ');
+        screen.cursor = Some(ScreenCursor {
             row: 0,
             col: 2,
             shape: CursorShape::Block,
         });
 
-        let svg_block = render_svg(&snap, &Theme::default());
+        let svg_block = render_svg(&screen, &Theme::default());
         assert!(svg_block.contains("<rect x=\"18.0\" y=\"0.0\" width=\"9.0\" height=\"18.0\""));
 
-        snap.cursor = Some(SnapCursor {
+        screen.cursor = Some(ScreenCursor {
             row: 1,
             col: 3,
             shape: CursorShape::Underline,
         });
-        let svg_ul = render_svg(&snap, &Theme::default());
+        let svg_ul = render_svg(&screen, &Theme::default());
         assert!(svg_ul.contains("<line x1=\"27.0\" y1=\"34.5\" x2=\"36.0\" y2=\"34.5\""));
 
-        snap.cursor = Some(SnapCursor {
+        screen.cursor = Some(ScreenCursor {
             row: 0,
             col: 1,
             shape: CursorShape::Beam,
         });
-        let svg_beam = render_svg(&snap, &Theme::default());
+        let svg_beam = render_svg(&screen, &Theme::default());
         assert!(svg_beam.contains("<line x1=\"10.0\" y1=\"0.0\" x2=\"10.0\" y2=\"18.0\""));
     }
 
     #[test]
     fn test_svg_renders_decorations() {
-        let mut snap = make_test_snapshot(1, 3, 'a');
-        snap.cells[0].underline = Underline::Single;
-        snap.cells[1].underline = Underline::Curly;
-        snap.cells[2].strikethrough = true;
+        let mut screen = make_test_screen(1, 3, 'a');
+        screen.cells[0].underline = Underline::Single;
+        screen.cells[1].underline = Underline::Curly;
+        screen.cells[2].strikethrough = true;
 
-        let svg = render_svg(&snap, &Theme::default());
+        let svg = render_svg(&screen, &Theme::default());
         assert!(svg.contains("<line x1=\"0.0\""));
         assert!(svg.contains("<path d=\"M 9.0 16.0"));
         assert!(svg.contains("stroke-width=\"1.2\""));
