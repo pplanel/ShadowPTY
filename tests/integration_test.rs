@@ -182,13 +182,17 @@ async fn test_stop_app_terminates_and_reaps_process() {
 
 #[tokio::test]
 async fn test_tui_end_tool() {
-    use shadowpty::server::ShadowPtyServer;
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiEndParams};
 
     let manager = PtyManager::new();
     let server = ShadowPtyServer::new(manager.clone());
 
     // Calling tui_end with no active session returns an error CallToolResult
-    let result = server.tui_end().await.expect("tool call ok");
+    let result = server
+        .tui_end(Parameters(TuiEndParams::default()))
+        .await
+        .expect("tool call ok");
     assert!(result.is_error.unwrap_or(false));
 
     // Start a session
@@ -201,7 +205,10 @@ async fn test_tui_end_tool() {
     assert!(is_process_running(pid));
 
     // Call tui_end
-    let result = server.tui_end().await.expect("tool call ok");
+    let result = server
+        .tui_end(Parameters(TuiEndParams::default()))
+        .await
+        .expect("tool call ok");
     assert!(!result.is_error.unwrap_or(false));
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -249,4 +256,155 @@ async fn test_stop_app_terminates_descendant_child_processes() {
         !pgrep_after.status.success(),
         "Background sleep should also be terminated"
     );
+}
+
+/// Polls a session's screen until it contains `needle` or ~2s pass.
+async fn wait_for_screen(manager: &PtyManager, session_id: &str, needle: &str) -> String {
+    let mut screen = String::new();
+    for _ in 0..40 {
+        screen = manager
+            .read_screen_session(session_id)
+            .await
+            .expect("read screen");
+        if screen.contains(needle) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    screen
+}
+
+#[tokio::test]
+async fn test_multi_session_isolation() {
+    let manager = PtyManager::new();
+    let cfg_a = PtyConfig::new("cat", &[], 24, 80);
+    let cfg_b = PtyConfig::new("cat", &[], 12, 40);
+
+    let info_a = manager
+        .start_session("sess-a", &cfg_a)
+        .await
+        .expect("start a");
+    let info_b = manager
+        .start_session("sess-b", &cfg_b)
+        .await
+        .expect("start b");
+    assert_eq!(info_a.session_id, "sess-a");
+    assert_eq!(info_b.session_id, "sess-b");
+    assert_ne!(info_a.pid, info_b.pid);
+
+    manager
+        .send_input_session("sess-a", "DATA_FOR_SESSION_A<ENTER>")
+        .await
+        .expect("send a");
+    manager
+        .send_input_session("sess-b", "DATA_FOR_SESSION_B<ENTER>")
+        .await
+        .expect("send b");
+
+    let screen_a = wait_for_screen(&manager, "sess-a", "DATA_FOR_SESSION_A").await;
+    let screen_b = wait_for_screen(&manager, "sess-b", "DATA_FOR_SESSION_B").await;
+    assert!(screen_a.contains("DATA_FOR_SESSION_A"), "a: {screen_a}");
+    assert!(!screen_a.contains("DATA_FOR_SESSION_B"), "a: {screen_a}");
+    assert!(screen_b.contains("DATA_FOR_SESSION_B"), "b: {screen_b}");
+    assert!(!screen_b.contains("DATA_FOR_SESSION_A"), "b: {screen_b}");
+
+    // Operations on an unknown session fail without touching the others
+    assert!(manager.send_input_session("nope", "x").await.is_err());
+    assert!(manager.read_screen_session("nope").await.is_err());
+    assert!(manager.resize_session("nope", 10, 10).await.is_err());
+
+    let pid_a = info_a.pid.expect("pid a");
+    manager.stop_session("sess-a").await.expect("stop a");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!is_process_running(pid_a), "session a should be reaped");
+    assert!(manager.is_session_active("sess-b").await);
+    assert!(is_process_running(info_b.pid.expect("pid b")));
+
+    manager.stop_session("sess-b").await.expect("stop b");
+}
+
+#[tokio::test]
+async fn test_start_same_session_id_replaces_and_reaps_previous() {
+    let manager = PtyManager::new();
+    let args = vec!["30".to_string()];
+    let config = PtyConfig::new("sleep", &args, 24, 80);
+
+    let first = manager
+        .start_session("dup", &config)
+        .await
+        .expect("start first");
+    let second = manager
+        .start_session("dup", &config)
+        .await
+        .expect("start second");
+    let first_pid = first.pid.expect("first pid");
+    let second_pid = second.pid.expect("second pid");
+    assert_ne!(first_pid, second_pid);
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !is_process_running(first_pid),
+        "replaced session's process should be killed and reaped"
+    );
+    assert!(is_process_running(second_pid));
+    assert_eq!(manager.list_sessions().await.len(), 1);
+
+    manager.stop_session("dup").await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_session_tools_route_by_session_id() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{
+        ShadowPtyServer, TuiEndParams, TuiListSessionsParams, TuiReadParams, TuiStartParams,
+    };
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+
+    let started = server
+        .tui_start(Parameters(TuiStartParams {
+            command: "cat".to_string(),
+            args: Vec::new(),
+            rows: Some(10),
+            cols: Some(40),
+            record_path: None,
+            session_id: Some("tool-sess".to_string()),
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!started.is_error.unwrap_or(false));
+    assert!(manager.is_session_active("tool-sess").await);
+    assert!(!manager.is_active().await, "default session must not start");
+
+    let listed = server
+        .tui_list_sessions(Parameters(TuiListSessionsParams::default()))
+        .await
+        .expect("tool call ok");
+    let listed_json = serde_json::to_string(&listed.content).expect("serialize");
+    assert!(listed_json.contains("tool-sess"), "{listed_json}");
+
+    // The default session doesn't exist, so reading it is an error
+    let read_default = server
+        .tui_read(Parameters(TuiReadParams::default()))
+        .await
+        .expect("tool call ok");
+    assert!(read_default.is_error.unwrap_or(false));
+
+    let read = server
+        .tui_read(Parameters(TuiReadParams {
+            session_id: Some("tool-sess".to_string()),
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!read.is_error.unwrap_or(false));
+
+    let ended = server
+        .tui_end(Parameters(TuiEndParams {
+            session_id: Some("tool-sess".to_string()),
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!ended.is_error.unwrap_or(false));
+    assert!(manager.list_sessions().await.is_empty());
 }

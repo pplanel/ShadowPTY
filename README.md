@@ -26,7 +26,7 @@ It allocates a real pseudo-terminal (PTY) on macOS and Linux, maintains an in-me
 - 🔄 **Dynamic Window Resizing**:
   Dynamically resize the PTY and virtual screen buffer on the fly (`tui_resize`) to test responsive TUI behavior, re-rendering, and layout adaptability.
 - 🔌 **Native Model Context Protocol (MCP)**:
-  Exposes 5 standardized MCP tools over `stdio` using `rmcp` 3.4+, ready to drop into Claude Desktop, Antigravity (`agy`), Cursor, and custom agent frameworks.
+  Exposes 6 standardized MCP tools over `stdio` using `rmcp` 3.4+, ready to drop into Claude Desktop, Antigravity (`agy`), Cursor, and custom agent frameworks.
 - 🛡️ **Protocol Isolation & Safety**:
   Internal diagnostics, traces, and child process logs are strictly piped to `stderr`, guaranteeing that `stdout` remains 100% clean and uncorrupted for JSON-RPC messages.
 - ❄️ **Reproducible Nix Environment**:
@@ -36,10 +36,10 @@ It allocates a real pseudo-terminal (PTY) on macOS and Linux, maintains an in-me
 
 ## 🛠️ MCP Tools Reference
 
-ShadowPTY exposes 5 MCP tools:
+ShadowPTY exposes 6 MCP tools. Every tool except `tui_list_sessions` takes an optional `session_id` (*string*, default: `"default"`), so an agent can drive several applications at once; each session has its own PTY, screen, and recording.
 
 ### 1. `tui_start`
-Spawns a command inside a new pseudo-terminal session, terminating any previous session.
+Spawns a command inside a new pseudo-terminal session. Starting a `session_id` that is already running terminates that session first; other sessions are unaffected.
 
 - **Parameters**:
   - `command` (*string*, required): Executable to launch (e.g. `"htop"`, `"lazygit"`, `"bash"`, `"nix-shell"`).
@@ -47,13 +47,15 @@ Spawns a command inside a new pseudo-terminal session, terminating any previous 
   - `rows` (*integer*, optional, default: `24`): Initial terminal rows.
   - `cols` (*integer*, optional, default: `80`): Initial terminal columns.
   - `record_path` (*string*, optional): Destination path where the session will be recorded in **asciicast v3** format (`.cast`).
+  - `session_id` (*string*, optional, default: `"default"`): Identifier for this session.
 - **Example**:
   ```json
   {
     "command": "htop",
     "rows": 30,
     "cols": 100,
-    "record_path": "/tmp/htop-session.cast"
+    "record_path": "/tmp/htop-session.cast",
+    "session_id": "htop"
   }
   ```
 
@@ -62,6 +64,7 @@ Sends keystrokes, text, and control sequences to the active application's PTY st
 
 - **Parameters**:
   - `keys` (*string*, required): Text or key tokens.
+  - `session_id` (*string*, optional): Target session.
 - **Supported Special Tokens**:
   - **Navigation**: `<UP>`, `<DOWN>`, `<LEFT>`, `<RIGHT>`, `<HOME>`, `<END>`, `<PAGEUP>`, `<PAGEDOWN>`
   - **Control**: `<ENTER>`, `<RETURN>`, `<ESC>`, `<ESCAPE>`, `<TAB>`, `<SPACE>`, `<BACKSPACE>`, `<DELETE>`
@@ -78,6 +81,7 @@ Resizes the pseudo-terminal window and virtual screen grid to test responsive la
 - **Parameters**:
   - `rows` (*integer*, required): New row count.
   - `cols` (*integer*, required): New column count.
+  - `session_id` (*string*, optional): Target session.
 - **Example**:
   ```json
   { "rows": 40, "cols": 120 }
@@ -86,20 +90,34 @@ Resizes the pseudo-terminal window and virtual screen grid to test responsive la
 ### 4. `tui_read`
 Captures the current visible state of the terminal screen formatted with semantic style markup.
 
-- **Parameters**: None.
+- **Parameters**:
+  - `session_id` (*string*, optional): Target session.
 - **Example Output**:
   ```text
   <fg:green><bold>SUCCESS</bold></fg> Process completed in 0.42s
   <fg:bright-black>Press [q] to exit</fg>
   ```
 
-### 5. `tui_end`
-Terminates the active pseudo-terminal session, killing the running child process, ensuring it is reaped from the operating system (preventing zombie processes), and finalizing asciicast recordings.
+### 5. `tui_list_sessions`
+Lists all active sessions, sorted by id.
 
 - **Parameters**: None.
 - **Example Output**:
+  ```json
+  [
+    { "id": "default", "command": "bash", "pid": 12001, "rows": 24, "cols": 80, "recording": false },
+    { "id": "htop", "command": "htop", "pid": 12345, "rows": 30, "cols": 100, "recording": true }
+  ]
+  ```
+
+### 6. `tui_end`
+Terminates a pseudo-terminal session, killing its whole process group, ensuring the child is reaped from the operating system (preventing zombie processes), and finalizing asciicast recordings.
+
+- **Parameters**:
+  - `session_id` (*string*, optional): Target session.
+- **Example Output**:
   ```text
-  Terminated session for command 'htop' (pid: 12345)
+  Terminated session 'htop' for command 'htop' (pid: 12345)
   ```
 
 ---
