@@ -26,6 +26,9 @@ use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_mai
 use shadowpty::formatter::{format_screen, screen_text};
 use shadowpty::output::{Pattern, SessionOutput, plain_text};
 use shadowpty::pty_manager::{ExpectTarget, Expectation, PtyConfig, PtyManager};
+use shadowpty::rasterizer::render_png_default;
+use shadowpty::screenshot::{Theme, render_svg};
+use shadowpty::snapshot::Snapshot;
 
 const ROWS: u16 = 43;
 const COLS: u16 = 155;
@@ -111,12 +114,24 @@ fn bench_emulator(c: &mut Criterion) {
 
 fn bench_render(c: &mut Criterion) {
     let term = drawn_term();
+    let snap = Snapshot::from_term(&term);
+    let theme = Theme::default();
+
     let mut group = c.benchmark_group("render");
     group.bench_function("format_screen", |b| {
         b.iter(|| format_screen(black_box(&term)));
     });
     group.bench_function("screen_text", |b| {
         b.iter(|| screen_text(black_box(&term)));
+    });
+    group.bench_function("snapshot", |b| {
+        b.iter(|| Snapshot::from_term(black_box(&term)));
+    });
+    group.bench_function("screenshot_svg", |b| {
+        b.iter(|| render_svg(black_box(&snap), black_box(&theme)));
+    });
+    group.bench_function("screenshot_png", |b| {
+        b.iter(|| render_png_default(black_box(&snap)));
     });
     group.finish();
 }

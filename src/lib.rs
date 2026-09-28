@@ -3,6 +3,7 @@ pub mod input;
 pub mod output;
 pub mod palette;
 pub mod pty_manager;
+pub mod rasterizer;
 pub mod recorder;
 pub mod screenshot;
 pub mod server;
