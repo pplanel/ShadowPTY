@@ -13,6 +13,8 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
+use crate::palette::{Underline, ansi_color_name};
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellStyle {
@@ -21,7 +23,9 @@ pub struct CellStyle {
     pub bold: bool,
     pub dim: bool,
     pub italic: bool,
-    pub underline: bool,
+    pub underline: Underline,
+    pub strikethrough: bool,
+    pub hidden: bool,
     pub inverse: bool,
 }
 
@@ -33,7 +37,9 @@ impl Default for CellStyle {
             bold: false,
             dim: false,
             italic: false,
-            underline: false,
+            underline: Underline::None,
+            strikethrough: false,
+            hidden: false,
             inverse: false,
         }
     }
@@ -49,7 +55,9 @@ impl CellStyle {
             bold: cell.flags.contains(Flags::BOLD),
             dim: cell.flags.contains(Flags::DIM),
             italic: cell.flags.contains(Flags::ITALIC),
-            underline: cell.flags.contains(Flags::UNDERLINE),
+            underline: Underline::from_flags(cell.flags),
+            strikethrough: cell.flags.contains(Flags::STRIKEOUT),
+            hidden: cell.flags.contains(Flags::HIDDEN),
             inverse: cell.flags.contains(Flags::INVERSE),
         }
     }
@@ -61,7 +69,9 @@ impl CellStyle {
             && !self.bold
             && !self.dim
             && !self.italic
-            && !self.underline
+            && matches!(self.underline, Underline::None)
+            && !self.strikethrough
+            && !self.hidden
             && !self.inverse
     }
 }
@@ -202,9 +212,36 @@ fn flush_span(style: &CellStyle, text: &str, output: &mut String) {
         open_tags.push("<italic>".to_string());
         close_tags.push("</italic>".to_string());
     }
-    if style.underline {
-        open_tags.push("<underline>".to_string());
-        close_tags.push("</underline>".to_string());
+    match style.underline {
+        Underline::None => {}
+        Underline::Single => {
+            open_tags.push("<underline>".to_string());
+            close_tags.push("</underline>".to_string());
+        }
+        Underline::Double => {
+            open_tags.push("<underline:double>".to_string());
+            close_tags.push("</underline:double>".to_string());
+        }
+        Underline::Curly => {
+            open_tags.push("<underline:curly>".to_string());
+            close_tags.push("</underline:curly>".to_string());
+        }
+        Underline::Dotted => {
+            open_tags.push("<underline:dotted>".to_string());
+            close_tags.push("</underline:dotted>".to_string());
+        }
+        Underline::Dashed => {
+            open_tags.push("<underline:dashed>".to_string());
+            close_tags.push("</underline:dashed>".to_string());
+        }
+    }
+    if style.strikethrough {
+        open_tags.push("<strikethrough>".to_string());
+        close_tags.push("</strikethrough>".to_string());
+    }
+    if style.hidden {
+        open_tags.push("<hidden>".to_string());
+        close_tags.push("</hidden>".to_string());
     }
     if style.inverse {
         open_tags.push("<inverse>".to_string());
@@ -220,26 +257,6 @@ fn flush_span(style: &CellStyle, text: &str, output: &mut String) {
     }
 }
 
-/// Names of the 16 ANSI colors, indexed like `NamedColor` discriminants and 256-color indexes 0-15.
-const ANSI_COLOR_NAMES: [&str; 16] = [
-    "black",
-    "red",
-    "green",
-    "yellow",
-    "blue",
-    "magenta",
-    "cyan",
-    "white",
-    "bright-black",
-    "bright-red",
-    "bright-green",
-    "bright-yellow",
-    "bright-blue",
-    "bright-magenta",
-    "bright-cyan",
-    "bright-white",
-];
-
 fn append_color_tags(
     color: Color,
     prefix: &str,
@@ -249,16 +266,13 @@ fn append_color_tags(
     match color {
         Color::Named(NamedColor::Foreground | NamedColor::Background) => {}
         Color::Named(named) => {
-            let name = ANSI_COLOR_NAMES
-                .get(named as usize)
-                .copied()
-                .unwrap_or("unknown");
+            let name = ansi_color_name(named as usize).unwrap_or("unknown");
             open_tags.push(format!("<{prefix}:{name}>"));
             close_tags.push(format!("</{prefix}>"));
         }
         // Indexes 0-15 are the same ANSI colors as `Named`, so `38;5;1` and `31` both render as red
         Color::Indexed(idx) => {
-            if let Some(name) = ANSI_COLOR_NAMES.get(usize::from(idx)) {
+            if let Some(name) = ansi_color_name(usize::from(idx)) {
                 open_tags.push(format!("<{prefix}:{name}>"));
             } else {
                 open_tags.push(format!("<{prefix}:idx:{idx}>"));
@@ -371,6 +385,35 @@ mod tests {
         assert_eq!(
             formatted,
             "<fg:red>A</fg><fg:bright-cyan>B</fg><fg:idx:208>C</fg>"
+        );
+    }
+
+    #[test]
+    fn test_strikethrough_and_hidden() {
+        let mut term = new_term(3, 20);
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+        parser.advance(&mut term, b"\x1b[9mstrike\x1b[0m \x1b[8msecret\x1b[0m");
+        let formatted = format_screen(&term);
+        assert_eq!(
+            formatted,
+            "<strikethrough>strike</strikethrough> <hidden>secret</hidden>"
+        );
+    }
+
+    #[test]
+    fn test_underline_styles() {
+        let mut term = new_term(5, 20);
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+        // 4 = single, 4:2 = double, 4:3 = curly, 4:4 = dotted, 4:5 = dashed
+        parser.advance(&mut term, b"\x1b[4msingle\x1b[0m\r\n");
+        parser.advance(&mut term, b"\x1b[4:2mdouble\x1b[0m\r\n");
+        parser.advance(&mut term, b"\x1b[4:3mcurly\x1b[0m\r\n");
+        parser.advance(&mut term, b"\x1b[4:4mdotted\x1b[0m\r\n");
+        parser.advance(&mut term, b"\x1b[4:5mdashed\x1b[0m");
+        let formatted = format_screen(&term);
+        assert_eq!(
+            formatted,
+            "<underline>single</underline>\n<underline:double>double</underline:double>\n<underline:curly>curly</underline:curly>\n<underline:dotted>dotted</underline:dotted>\n<underline:dashed>dashed</underline:dashed>"
         );
     }
 }

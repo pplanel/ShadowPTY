@@ -51,6 +51,36 @@ pub const DEFAULT_BACKGROUND: Rgb = rgb(0x18, 0x18, 0x18);
 /// Default cursor color (`#ffffff`).
 pub const DEFAULT_CURSOR: Rgb = rgb(0xff, 0xff, 0xff);
 
+/// Names of the 16 ANSI colors, indexed matching `NamedColor` discriminants and 256-color indices `0..=15`.
+pub const ANSI_COLOR_NAMES: [&str; 16] = [
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "bright-black",
+    "bright-red",
+    "bright-green",
+    "bright-yellow",
+    "bright-blue",
+    "bright-magenta",
+    "bright-cyan",
+    "bright-white",
+];
+
+/// Returns the semantic color name for a given ANSI color index (`0..=15`).
+#[must_use]
+pub const fn ansi_color_name(index: usize) -> Option<&'static str> {
+    if index < ANSI_COLOR_NAMES.len() {
+        Some(ANSI_COLOR_NAMES[index])
+    } else {
+        None
+    }
+}
+
 /// Constructs the default 256-color table at compile time.
 const fn make_base_256_colors() -> [Rgb; 256] {
     let mut table = [Rgb { r: 0, g: 0, b: 0 }; 256];
