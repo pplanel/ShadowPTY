@@ -44,6 +44,7 @@ use crate::formatter::{format_screen, screen_text};
 use crate::input::parse_input_keys;
 use crate::output::{Pattern, SessionOutput};
 use crate::recorder::{AsciicastRecorder, SharedRecorder};
+use crate::snapshot::Snapshot;
 
 /// Session id used when a tool call doesn't specify one.
 pub const DEFAULT_SESSION_ID: &str = "default";
@@ -641,6 +642,23 @@ impl PtyManager {
     /// Reads the default session screen.
     pub async fn read_screen(&self) -> Result<String> {
         self.read_screen_session(DEFAULT_SESSION_ID).await
+    }
+
+    /// Takes a detached screen snapshot of the target session.
+    pub async fn snapshot_session(&self, session_id: &str) -> Result<Snapshot> {
+        let terminal = self
+            .with_session(session_id, |s| Arc::clone(&s.terminal))
+            .await?;
+
+        let terminal = lock_terminal(&terminal);
+        let snapshot = Snapshot::from_term(&terminal);
+        drop(terminal);
+        Ok(snapshot)
+    }
+
+    /// Takes a detached screen snapshot of the default session.
+    pub async fn snapshot(&self) -> Result<Snapshot> {
+        self.snapshot_session(DEFAULT_SESSION_ID).await
     }
 
     /// Checks if a session with the given id is currently active.
