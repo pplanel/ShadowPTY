@@ -4,6 +4,7 @@
 //! the 24-step grayscale ramp (indices 232–255), default canvas colors,
 //! and resolution of dynamic app overrides (OSC 4, OSC 10, OSC 11, OSC 12).
 
+pub use alacritty_terminal::term::cell::{Cell, Flags};
 pub use alacritty_terminal::term::color::Colors;
 pub use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
@@ -195,6 +196,77 @@ const fn base_color_for_dim(dim: NamedColor) -> Option<NamedColor> {
     }
 }
 
+/// Terminal text underline style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Underline {
+    /// No underline.
+    #[default]
+    None,
+    /// Standard single underline (`SGR 4`).
+    Single,
+    /// Double underline (`SGR 4:2`).
+    Double,
+    /// Curly underline / wave (`SGR 4:3`).
+    Curly,
+    /// Dotted underline (`SGR 4:4`).
+    Dotted,
+    /// Dashed underline (`SGR 4:5`).
+    Dashed,
+}
+
+impl Underline {
+    /// Extracts the [`Underline`] style from cell [`Flags`].
+    #[must_use]
+    pub const fn from_flags(flags: Flags) -> Self {
+        if flags.contains(Flags::UNDERCURL) {
+            Self::Curly
+        } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
+            Self::Double
+        } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+            Self::Dotted
+        } else if flags.contains(Flags::DASHED_UNDERLINE) {
+            Self::Dashed
+        } else if flags.contains(Flags::UNDERLINE) {
+            Self::Single
+        } else {
+            Self::None
+        }
+    }
+}
+
+/// Request parameters for resolving a cell's effective colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellColorRequest {
+    pub fg: Color,
+    pub bg: Color,
+    pub flags: Flags,
+}
+
+impl CellColorRequest {
+    /// Creates a new cell color request.
+    #[must_use]
+    pub const fn new(fg: Color, bg: Color, flags: Flags) -> Self {
+        Self { fg, bg, flags }
+    }
+
+    /// Creates a request directly from a terminal [`Cell`].
+    #[must_use]
+    pub const fn from_cell(cell: &Cell) -> Self {
+        Self {
+            fg: cell.fg,
+            bg: cell.bg,
+            flags: cell.flags,
+        }
+    }
+}
+
+/// Resolved foreground and background RGB colors for a cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedCellColors {
+    pub fg: Rgb,
+    pub bg: Rgb,
+}
+
 /// Terminal color resolver combining a [`BasePalette`] with dynamic app overrides.
 ///
 /// Handles entries set by applications via OSC 4 (indexed colors), OSC 10 (text foreground),
@@ -267,6 +339,41 @@ impl Palette {
     pub fn resolve_cursor(&self, overrides: Option<&Colors>) -> Rgb {
         self.resolve_named(NamedColor::Cursor, overrides)
     }
+
+    /// Resolves a cell's final colors according to:
+    ///
+    /// 1. Base color / dynamic OSC overrides
+    /// 2. `DIM` (matching dim named color or 0.66 scale factor)
+    /// 3. `INVERSE` (swap fg and bg after dim)
+    /// 4. `HIDDEN` (fg = bg)
+    #[must_use]
+    pub fn resolve_cell(
+        &self,
+        req: CellColorRequest,
+        overrides: Option<&Colors>,
+    ) -> ResolvedCellColors {
+        let mut bg = self.resolve_color(req.bg, overrides);
+        let mut fg = if req.flags.contains(Flags::DIM) {
+            match req.fg {
+                Color::Named(named) => self.resolve_named(named.to_dim(), overrides),
+                Color::Indexed(_) | Color::Spec(_) => {
+                    scale_rgb_const(self.resolve_color(req.fg, overrides), 66)
+                }
+            }
+        } else {
+            self.resolve_color(req.fg, overrides)
+        };
+
+        if req.flags.contains(Flags::INVERSE) {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+
+        if req.flags.contains(Flags::HIDDEN) {
+            fg = bg;
+        }
+
+        ResolvedCellColors { fg, bg }
+    }
 }
 
 /// A color resolver bound to a specific terminal's dynamic colors.
@@ -325,6 +432,18 @@ impl<'a> TermPalette<'a> {
     #[must_use]
     pub fn cursor(&self) -> Rgb {
         self.palette.resolve_cursor(Some(self.colors))
+    }
+
+    /// Resolves the final foreground and background colors for a cell request.
+    #[must_use]
+    pub fn resolve_cell(&self, req: CellColorRequest) -> ResolvedCellColors {
+        self.palette.resolve_cell(req, Some(self.colors))
+    }
+
+    /// Resolves the final foreground and background colors directly from a [`Cell`].
+    #[must_use]
+    pub fn resolve_term_cell(&self, cell: &Cell) -> ResolvedCellColors {
+        self.resolve_cell(CellColorRequest::from_cell(cell))
     }
 }
 
@@ -547,5 +666,119 @@ mod tests {
         let dim_red = term_palette.resolve(Color::Named(NamedColor::DimRed));
         let expected_r = u8::try_from((255u32 * 66) / 100).unwrap();
         assert_eq!(dim_red, rgb(expected_r, 0, 0));
+    }
+
+    #[test]
+    fn test_underline_from_flags() {
+        assert_eq!(Underline::from_flags(Flags::empty()), Underline::None);
+        assert_eq!(Underline::from_flags(Flags::UNDERLINE), Underline::Single);
+        assert_eq!(
+            Underline::from_flags(Flags::DOUBLE_UNDERLINE),
+            Underline::Double
+        );
+        assert_eq!(Underline::from_flags(Flags::UNDERCURL), Underline::Curly);
+        assert_eq!(
+            Underline::from_flags(Flags::DOTTED_UNDERLINE),
+            Underline::Dotted
+        );
+        assert_eq!(
+            Underline::from_flags(Flags::DASHED_UNDERLINE),
+            Underline::Dashed
+        );
+    }
+
+    #[test]
+    fn test_cell_dim_resolution() {
+        let palette = Palette::default();
+        let red = Color::Named(NamedColor::Red);
+        let bg = Color::Named(NamedColor::Background);
+
+        // Without DIM
+        let normal = palette.resolve_cell(CellColorRequest::new(red, bg, Flags::empty()), None);
+        assert_eq!(normal.fg, rgb(0xcd, 0x00, 0x00));
+        assert_eq!(normal.bg, DEFAULT_BACKGROUND);
+
+        // With DIM: Named red becomes DimRed
+        let dimmed = palette.resolve_cell(CellColorRequest::new(red, bg, Flags::DIM), None);
+        let expected_r = u8::try_from((0xcdu32 * 66) / 100).unwrap();
+        assert_eq!(dimmed.fg, rgb(expected_r, 0, 0));
+        assert_eq!(dimmed.bg, DEFAULT_BACKGROUND);
+
+        // With DIM on truecolor Spec
+        let spec = Color::Spec(rgb(100, 200, 50));
+        let dimmed_spec = palette.resolve_cell(CellColorRequest::new(spec, bg, Flags::DIM), None);
+        assert_eq!(dimmed_spec.fg, rgb(66, 132, 33));
+    }
+
+    #[test]
+    fn test_cell_inverse_resolution() {
+        let palette = Palette::default();
+        let fg = Color::Named(NamedColor::Red);
+        let bg = Color::Named(NamedColor::Blue);
+
+        let res = palette.resolve_cell(CellColorRequest::new(fg, bg, Flags::INVERSE), None);
+        assert_eq!(res.fg, palette.base().named(NamedColor::Blue));
+        assert_eq!(res.bg, palette.base().named(NamedColor::Red));
+    }
+
+    #[test]
+    fn test_cell_dim_then_inverse_order() {
+        let palette = Palette::default();
+        let fg = Color::Named(NamedColor::Red);
+        let bg = Color::Named(NamedColor::Blue);
+
+        // Pipeline order: DIM dims fg, then INVERSE swaps fg and bg
+        let res = palette.resolve_cell(
+            CellColorRequest::new(fg, bg, Flags::DIM | Flags::INVERSE),
+            None,
+        );
+        let expected_dim_r = u8::try_from((0xcdu32 * 66) / 100).unwrap();
+        assert_eq!(res.fg, palette.base().named(NamedColor::Blue));
+        assert_eq!(res.bg, rgb(expected_dim_r, 0, 0));
+    }
+
+    #[test]
+    fn test_cell_hidden_resolution() {
+        let palette = Palette::default();
+        let fg = Color::Named(NamedColor::Red);
+        let bg = Color::Named(NamedColor::Blue);
+
+        // HIDDEN sets fg = bg
+        let res = palette.resolve_cell(CellColorRequest::new(fg, bg, Flags::HIDDEN), None);
+        assert_eq!(res.fg, palette.base().named(NamedColor::Blue));
+        assert_eq!(res.bg, palette.base().named(NamedColor::Blue));
+
+        // INVERSE + HIDDEN: swap first (fg=Blue, bg=Red), then HIDDEN (fg = bg = Red)
+        let inv_hidden = palette.resolve_cell(
+            CellColorRequest::new(fg, bg, Flags::INVERSE | Flags::HIDDEN),
+            None,
+        );
+        assert_eq!(inv_hidden.fg, palette.base().named(NamedColor::Red));
+        assert_eq!(inv_hidden.bg, palette.base().named(NamedColor::Red));
+    }
+
+    #[test]
+    fn test_term_cell_resolution_from_terminal_grid() {
+        use alacritty_terminal::index::{Column, Line};
+
+        let mut term = new_test_term();
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+
+        // Write "A" with Red fg, Green bg, Dim and Inverse
+        parser.advance(&mut term, b"\x1b[31;42;2;7mA\x1b[0m");
+
+        let palette = Palette::default();
+        let term_palette = TermPalette::new(&palette, term.colors());
+
+        let cell = &term.grid()[Line(0)][Column(0)];
+        assert_eq!(cell.c, 'A');
+        assert!(cell.flags.contains(Flags::DIM));
+        assert!(cell.flags.contains(Flags::INVERSE));
+
+        let colors = term_palette.resolve_term_cell(cell);
+        // fg was Green (inverted), bg was Red (dimmed and inverted)
+        assert_eq!(colors.fg, palette.base().named(NamedColor::Green));
+        let expected_dim_r = u8::try_from((0xcdu32 * 66) / 100).unwrap();
+        assert_eq!(colors.bg, rgb(expected_dim_r, 0, 0));
     }
 }
