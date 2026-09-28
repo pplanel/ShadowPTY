@@ -5,3 +5,4 @@ pub mod palette;
 pub mod pty_manager;
 pub mod recorder;
 pub mod server;
+pub mod snapshot;
