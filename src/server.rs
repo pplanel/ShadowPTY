@@ -1,5 +1,7 @@
 //! MCP Tool Router implementation for `ShadowPTY`.
 
+use std::time::Duration;
+
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::CallToolResult,
@@ -8,7 +10,23 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::pty_manager::{DEFAULT_SESSION_ID, PtyManager};
+use crate::output::Pattern;
+use crate::pty_manager::{DEFAULT_SESSION_ID, ExpectTarget, Expectation, PtyManager, Script};
+
+/// Upper limit for any wait, so a single call can't hang the agent indefinitely.
+const MAX_WAIT_MS: u64 = 120_000;
+
+fn wait_duration(requested_ms: Option<u64>, default_ms: u64) -> Duration {
+    Duration::from_millis(requested_ms.unwrap_or(default_ms).min(MAX_WAIT_MS))
+}
+
+fn text_result(text: String) -> CallToolResult {
+    CallToolResult::success(vec![rmcp::model::ContentBlock::text(text)])
+}
+
+fn error_result(text: String) -> CallToolResult {
+    CallToolResult::error(vec![rmcp::model::ContentBlock::text(text)])
+}
 
 /// Parameters for `tui_start` tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -44,6 +62,56 @@ pub struct TuiResizeParams {
     pub rows: u16,
     /// New number of terminal columns.
     pub cols: u16,
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Parameters for `tui_paste` tool.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct TuiPasteParams {
+    /// Text to send as a single bracketed paste (DECSET 2004).
+    pub text: String,
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Parameters for `tui_expect` tool.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct TuiExpectParams {
+    /// Substring or regex pattern to wait for.
+    pub pattern: String,
+    /// If true, `pattern` is a regular expression (default false: matched literally).
+    pub is_regex: Option<bool>,
+    /// If true, match against the rendered screen text instead of new output (default false).
+    pub screen_mode: Option<bool>,
+    /// Maximum time to wait in milliseconds (default 10000, at most 120000).
+    pub timeout_ms: Option<u64>,
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Parameters for `tui_wait_stable` tool.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TuiWaitStableParams {
+    /// How long output must stay quiet, in milliseconds (default 100).
+    pub quiet_period_ms: Option<u64>,
+    /// Maximum time to wait in milliseconds (default 3000, at most 120000).
+    pub max_wait_ms: Option<u64>,
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Parameters for `tui_run_script` tool.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct TuiRunScriptParams {
+    /// Shell commands to run in order.
+    pub commands: Vec<String>,
+    /// Prompt that the shell prints when a command finishes (default "$").
+    pub prompt_pattern: Option<String>,
+    /// If true, `prompt_pattern` is a regular expression (default false).
+    pub is_regex: Option<bool>,
+    /// Maximum time to wait for each command's prompt, in milliseconds (default 30000, at most 120000).
+    pub timeout_ms: Option<u64>,
     /// Target session identifier (defaults to "default").
     pub session_id: Option<String>,
 }
@@ -151,6 +219,149 @@ impl ShadowPtyServer {
         }
     }
 
+    /// Sends text as a single bracketed paste.
+    #[tool(
+        name = "tui_paste",
+        description = "Pastes text (e.g. a multiline script) using bracketed paste mode, so shells and editors receive it as one paste instead of typed keys."
+    )]
+    pub async fn tui_paste(
+        &self,
+        Parameters(params): Parameters<TuiPasteParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        Ok(
+            match self
+                .manager
+                .send_paste_session(session_id, &params.text)
+                .await
+            {
+                Ok(bytes) => text_result(format!("Pasted {bytes} bytes to session '{session_id}'")),
+                Err(e) => error_result(format!("Failed to paste text: {e:#}")),
+            },
+        )
+    }
+
+    /// Waits for a literal or regex pattern in new output or on screen.
+    #[tool(
+        name = "tui_expect",
+        description = "Waits until a literal or regex pattern appears, instead of sleeping and polling tui_read. By default it searches output that neither tui_read nor an earlier tui_expect has returned yet; with screen_mode it searches the rendered screen text. Fails early if the process exits."
+    )]
+    pub async fn tui_expect(
+        &self,
+        Parameters(params): Parameters<TuiExpectParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let pattern = match Pattern::new(&params.pattern, params.is_regex.unwrap_or(false)) {
+            Ok(pattern) => pattern,
+            Err(e) => {
+                return Ok(error_result(format!(
+                    "Invalid pattern '{}': {e}",
+                    params.pattern
+                )));
+            }
+        };
+        let expectation = Expectation {
+            pattern,
+            target: if params.screen_mode.unwrap_or(false) {
+                ExpectTarget::Screen
+            } else {
+                ExpectTarget::Stream
+            },
+            timeout: wait_duration(params.timeout_ms, 10_000),
+        };
+
+        Ok(
+            match self.manager.expect_session(session_id, &expectation).await {
+                Ok(matched) => {
+                    text_result(format!("Matched {matched:?} in session '{session_id}'"))
+                }
+                Err(e) => error_result(format!("Expect failed: {e:#}")),
+            },
+        )
+    }
+
+    /// Waits until the application stops producing output.
+    #[tool(
+        name = "tui_wait_stable",
+        description = "Waits until the application has produced no output for quiet_period_ms, so the next tui_read sees a finished screen. Returns immediately if the process has exited."
+    )]
+    pub async fn tui_wait_stable(
+        &self,
+        Parameters(params): Parameters<TuiWaitStableParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let quiet_period = wait_duration(params.quiet_period_ms, 100);
+        let max_wait = wait_duration(params.max_wait_ms, 3_000);
+
+        Ok(
+            match self
+                .manager
+                .wait_stable_session(session_id, quiet_period, max_wait)
+                .await
+            {
+                Ok(()) => text_result(format!("Screen stable in session '{session_id}'")),
+                Err(e) => error_result(format!("Wait stable failed: {e:#}")),
+            },
+        )
+    }
+
+    /// Runs shell commands in order, waiting for the prompt after each.
+    #[tool(
+        name = "tui_run_script",
+        description = "Runs shell commands one at a time in a shell session, waiting for the prompt after each, and returns each command's output. Output from before the call is ignored, and the echo of each command is skipped. Stops at the first command whose prompt doesn't appear within timeout_ms."
+    )]
+    pub async fn tui_run_script(
+        &self,
+        Parameters(params): Parameters<TuiRunScriptParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let prompt_source = params.prompt_pattern.as_deref().unwrap_or("$");
+        let prompt = match Pattern::new(prompt_source, params.is_regex.unwrap_or(false)) {
+            Ok(prompt) => prompt,
+            Err(e) => {
+                return Ok(error_result(format!(
+                    "Invalid prompt pattern '{prompt_source}': {e}"
+                )));
+            }
+        };
+        let script = Script {
+            commands: &params.commands,
+            prompt,
+            timeout_per_command: wait_duration(params.timeout_ms, 30_000),
+        };
+
+        let outcome = match self.manager.run_script_session(session_id, &script).await {
+            Ok(outcome) => outcome,
+            Err(e) => return Ok(error_result(format!("Run script failed: {e:#}"))),
+        };
+
+        let mut report = outcome
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, step)| {
+                format!(
+                    "=== Command {}: {} ===\n{}",
+                    i + 1,
+                    step.command,
+                    step.output
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Ok(match outcome.error {
+            None => text_result(report),
+            Some(error) => {
+                if !report.is_empty() {
+                    report.push_str("\n\n");
+                }
+                report.push_str("Script stopped: ");
+                report.push_str(&error);
+                error_result(report)
+            }
+        })
+    }
+
     /// Resizes the pseudo-terminal window and updates screen parser dimensions.
     #[tool(
         name = "tui_resize",
@@ -182,7 +393,7 @@ impl ShadowPtyServer {
     /// Reads the current TUI screen state, preserving layout, colors, and text attributes.
     #[tool(
         name = "tui_read",
-        description = "Reads the current screen state formatted with semantic tags (<fg:...>, <bg:...>, <bold>, etc.)."
+        description = "Reads the current screen state formatted with semantic tags (<fg:...>, <bg:...>, <bold>, etc.). Output shown on this screen counts as seen: a later tui_expect only matches newer output."
     )]
     pub async fn tui_read(
         &self,

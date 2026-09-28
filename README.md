@@ -26,7 +26,7 @@ It allocates a real pseudo-terminal (PTY) on macOS and Linux, maintains an in-me
 - 🔄 **Dynamic Window Resizing**:
   Dynamically resize the PTY and virtual screen buffer on the fly (`tui_resize`) to test responsive TUI behavior, re-rendering, and layout adaptability.
 - 🔌 **Native Model Context Protocol (MCP)**:
-  Exposes 6 standardized MCP tools over `stdio` using `rmcp` 3.4+, ready to drop into Claude Desktop, Antigravity (`agy`), Cursor, and custom agent frameworks.
+  Exposes 10 standardized MCP tools over `stdio` using `rmcp` 3.4+, ready to drop into Claude Desktop, Antigravity (`agy`), Cursor, and custom agent frameworks.
 - 🛡️ **Protocol Isolation & Safety**:
   Internal diagnostics, traces, and child process logs are strictly piped to `stderr`, guaranteeing that `stdout` remains 100% clean and uncorrupted for JSON-RPC messages.
 - ❄️ **Reproducible Nix Environment**:
@@ -36,7 +36,7 @@ It allocates a real pseudo-terminal (PTY) on macOS and Linux, maintains an in-me
 
 ## 🛠️ MCP Tools Reference
 
-ShadowPTY exposes 6 MCP tools. Every tool except `tui_list_sessions` takes an optional `session_id` (*string*, default: `"default"`), so an agent can drive several applications at once; each session has its own PTY, screen, and recording.
+ShadowPTY exposes 10 MCP tools. Every tool except `tui_list_sessions` takes an optional `session_id` (*string*, default: `"default"`), so an agent can drive several applications at once; each session has its own PTY, screen, and recording.
 
 ### 1. `tui_start`
 Spawns a command inside a new pseudo-terminal session. Starting a `session_id` that is already running terminates that session first; other sessions are unaffected.
@@ -75,7 +75,55 @@ Sends keystrokes, text, and control sequences to the active application's PTY st
   { "keys": "echo 'Hello ShadowPTY'<ENTER>" }
   ```
 
-### 3. `tui_resize`
+### 3. `tui_paste`
+Sends text as a single bracketed paste (DECSET 2004), so shells and editors receive a multiline script as one paste instead of typed keys.
+
+- **Parameters**:
+  - `text` (*string*, required): Text to paste. Text containing the paste end marker (`ESC[201~`) is rejected.
+  - `session_id` (*string*, optional): Target session.
+
+### 4. `tui_expect`
+Waits until a literal or regex pattern appears, instead of sleeping and polling `tui_read`.
+
+- **Parameters**:
+  - `pattern` (*string*, required): Text or regular expression to wait for.
+  - `is_regex` (*boolean*, optional, default: `false`): Treat `pattern` as a regular expression.
+  - `screen_mode` (*boolean*, optional, default: `false`): Match against the rendered screen text instead of new output.
+  - `timeout_ms` (*integer*, optional, default: `10000`, max: `120000`): How long to wait.
+  - `session_id` (*string*, optional): Target session.
+- **Behavior**:
+  - By default it searches output that neither `tui_read` nor an earlier `tui_expect` has returned, so it never matches something the agent already saw. A match consumes the output up to its end.
+  - With `screen_mode`, it matches what is actually drawn, e.g. text built with cursor movements or overwrites.
+  - It fails immediately, with the last output, if the process exits.
+- **Example**:
+  ```json
+  { "pattern": "Build (succeeded|failed)", "is_regex": true, "timeout_ms": 60000 }
+  ```
+
+### 5. `tui_wait_stable`
+Waits until the application has produced no output for a quiet period, so the next `tui_read` sees a finished screen.
+
+- **Parameters**:
+  - `quiet_period_ms` (*integer*, optional, default: `100`): How long output must stay quiet.
+  - `max_wait_ms` (*integer*, optional, default: `3000`, max: `120000`): Give up after this long.
+  - `session_id` (*string*, optional): Target session.
+
+### 6. `tui_run_script`
+Runs shell commands one at a time, waiting for the prompt after each, and returns each command's output.
+
+- **Parameters**:
+  - `commands` (*array of strings*, required): Commands to run in order.
+  - `prompt_pattern` (*string*, optional, default: `"$"`): The prompt the shell prints when a command finishes.
+  - `is_regex` (*boolean*, optional, default: `false`): Treat `prompt_pattern` as a regular expression.
+  - `timeout_ms` (*integer*, optional, default: `30000`, max: `120000`): How long to wait for each command's prompt.
+  - `session_id` (*string*, optional): Target session.
+- **Behavior**: Output from before the call is ignored and the terminal's echo of each command is skipped, so a command containing the prompt text doesn't end its own wait. The script stops at the first command whose prompt doesn't appear in time and reports the output received so far.
+- **Example**:
+  ```json
+  { "commands": ["cargo build", "cargo test"], "prompt_pattern": "READY> " }
+  ```
+
+### 7. `tui_resize`
 Resizes the pseudo-terminal window and virtual screen grid to test responsive layouts and window change handlers.
 
 - **Parameters**:
@@ -87,8 +135,8 @@ Resizes the pseudo-terminal window and virtual screen grid to test responsive la
   { "rows": 40, "cols": 120 }
   ```
 
-### 4. `tui_read`
-Captures the current visible state of the terminal screen formatted with semantic style markup.
+### 8. `tui_read`
+Captures the current visible state of the terminal screen formatted with semantic style markup. Output shown on the screen counts as seen: a later `tui_expect` only matches newer output.
 
 - **Parameters**:
   - `session_id` (*string*, optional): Target session.
@@ -98,7 +146,7 @@ Captures the current visible state of the terminal screen formatted with semanti
   <fg:bright-black>Press [q] to exit</fg>
   ```
 
-### 5. `tui_list_sessions`
+### 9. `tui_list_sessions`
 Lists all active sessions, sorted by id.
 
 - **Parameters**: None.
@@ -110,7 +158,7 @@ Lists all active sessions, sorted by id.
   ]
   ```
 
-### 6. `tui_end`
+### 10. `tui_end`
 Terminates a pseudo-terminal session, killing its whole process group, ensuring the child is reaped from the operating system (preventing zombie processes), and finalizing asciicast recordings.
 
 - **Parameters**:

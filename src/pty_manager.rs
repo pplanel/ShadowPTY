@@ -3,12 +3,14 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 
 use alacritty_terminal::event::{OnResize, VoidListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -34,12 +36,20 @@ impl Dimensions for TermSize {
     }
 }
 
-use crate::formatter::format_screen;
+use crate::formatter::{format_screen, screen_text};
 use crate::input::parse_input_keys;
+use crate::output::{Pattern, SessionOutput};
 use crate::recorder::{AsciicastRecorder, SharedRecorder};
 
 /// Session id used when a tool call doesn't specify one.
 pub const DEFAULT_SESSION_ID: &str = "default";
+
+/// Bracketed paste markers (DECSET 2004).
+const PASTE_START: &str = "\x1b[200~";
+const PASTE_END: &str = "\x1b[201~";
+
+/// How much recent output or screen text to include in a failed wait's error message.
+const ERROR_TAIL_CHARS: usize = 500;
 
 /// Information about a running process session.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -60,6 +70,46 @@ pub struct SessionSummary {
     pub rows: u16,
     pub cols: u16,
     pub recording: bool,
+}
+
+/// Where [`PtyManager::expect_session`] looks for its pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectTarget {
+    /// Output not yet consumed by an earlier expect or screen read; a match consumes it.
+    Stream,
+    /// The rendered screen text, re-checked whenever output arrives.
+    Screen,
+}
+
+/// What to wait for, where, and for how long.
+#[derive(Debug, Clone)]
+pub struct Expectation {
+    pub pattern: Pattern,
+    pub target: ExpectTarget,
+    pub timeout: Duration,
+}
+
+/// Shell commands for [`PtyManager::run_script_session`], and the prompt that follows each.
+#[derive(Debug, Clone)]
+pub struct Script<'a> {
+    pub commands: &'a [String],
+    pub prompt: Pattern,
+    pub timeout_per_command: Duration,
+}
+
+/// Output of one command run by [`PtyManager::run_script_session`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ScriptStep {
+    pub command: String,
+    pub output: String,
+}
+
+/// Result of [`PtyManager::run_script_session`]: the commands that completed, and why the
+/// script stopped early, if it did.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ScriptOutcome {
+    pub steps: Vec<ScriptStep>,
+    pub error: Option<String>,
 }
 
 /// Configuration for spawning a PTY command.
@@ -95,6 +145,7 @@ impl<'a> PtyConfig<'a> {
 pub struct TuiSession {
     pub info: ProcessInfo,
     pub terminal: Arc<std::sync::Mutex<Term<VoidListener>>>,
+    output: Arc<SessionOutput>,
     pty_writer: Arc<std::sync::Mutex<File>>,
     pub pty: Pty,
     recorder: SharedRecorder,
@@ -139,6 +190,7 @@ impl TuiSession {
             &term_size,
             VoidListener,
         )));
+        let output = Arc::new(SessionOutput::new());
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
         let recorder = if let Some(path) = config.record_path {
@@ -150,19 +202,15 @@ impl TuiSession {
             Arc::new(std::sync::Mutex::new(None))
         };
 
-        let reader_terminal = Arc::clone(&terminal);
-        let reader_shutdown = Arc::clone(&shutdown_flag);
-        let reader_recorder = Arc::clone(&recorder);
+        let sinks = ReaderSinks {
+            terminal: Arc::clone(&terminal),
+            output: Arc::clone(&output),
+            recorder: Arc::clone(&recorder),
+            shutdown_flag: Arc::clone(&shutdown_flag),
+        };
         let reader_handle = thread::Builder::new()
             .name(format!("shadowpty-reader-{session_id}"))
-            .spawn(move || {
-                run_pty_reader(
-                    pty_reader,
-                    &reader_terminal,
-                    &reader_recorder,
-                    &reader_shutdown,
-                );
-            })
+            .spawn(move || run_pty_reader(pty_reader, &sinks))
             .context("failed to spawn PTY reader thread")?;
 
         Ok(Self {
@@ -174,6 +222,7 @@ impl TuiSession {
                 session_id: session_id.to_string(),
             },
             terminal,
+            output,
             pty_writer: Arc::new(std::sync::Mutex::new(pty_writer)),
             pty,
             recorder,
@@ -213,6 +262,12 @@ async fn teardown(session: TuiSession) {
 
 fn no_session(session_id: &str) -> String {
     format!("no active PTY session with id '{session_id}'; call tui_start first")
+}
+
+fn lock_terminal(
+    terminal: &std::sync::Mutex<Term<VoidListener>>,
+) -> std::sync::MutexGuard<'_, Term<VoidListener>> {
+    terminal.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Thread-safe manager for concurrent headless PTY sessions, keyed by session id.
@@ -279,37 +334,221 @@ impl PtyManager {
         self.start_session(DEFAULT_SESSION_ID, config).await
     }
 
-    /// Sends keystrokes with symbolic tokens (e.g. `<ENTER>`, `<UP>`) to the target session.
-    pub async fn send_input_session(&self, session_id: &str, keys: &str) -> Result<usize> {
+    /// Writes raw bytes to the session's PTY and records them as input.
+    async fn write_input(&self, session_id: &str, bytes: &[u8]) -> Result<()> {
         let (writer, recorder) = self
             .with_session(session_id, |s| {
                 (Arc::clone(&s.pty_writer), Arc::clone(&s.recorder))
             })
             .await?;
 
-        let bytes = parse_input_keys(keys);
         {
             let mut writer = writer
                 .lock()
                 .map_err(|_| anyhow::anyhow!("failed to acquire lock on PTY writer"))?;
             writer
-                .write_all(&bytes)
-                .context("failed to write keys to PTY")?;
+                .write_all(bytes)
+                .context("failed to write input to PTY")?;
             writer.flush().context("failed to flush PTY writer")?;
         }
 
         if let Ok(mut rec_guard) = recorder.lock()
             && let Some(rec) = rec_guard.as_mut()
         {
-            let _ = rec.record_input(&bytes);
+            let _ = rec.record_input(bytes);
         }
 
+        Ok(())
+    }
+
+    /// Sends keystrokes with symbolic tokens (e.g. `<ENTER>`, `<UP>`) to the target session.
+    pub async fn send_input_session(&self, session_id: &str, keys: &str) -> Result<usize> {
+        let bytes = parse_input_keys(keys);
+        self.write_input(session_id, &bytes).await?;
         Ok(bytes.len())
     }
 
     /// Sends input to the default session.
     pub async fn send_input(&self, keys: &str) -> Result<usize> {
         self.send_input_session(DEFAULT_SESSION_ID, keys).await
+    }
+
+    /// Sends text wrapped in bracketed paste markers, so shells and editors treat it as one
+    /// paste instead of typed keys. Returns the number of bytes of `text` sent.
+    pub async fn send_paste_session(&self, session_id: &str, text: &str) -> Result<usize> {
+        anyhow::ensure!(
+            !text.contains(PASTE_END),
+            "text contains the bracketed paste end marker (ESC[201~), which would end the paste early; send it with tui_input instead"
+        );
+        let payload = format!("{PASTE_START}{text}{PASTE_END}");
+        self.write_input(session_id, payload.as_bytes()).await?;
+        Ok(text.len())
+    }
+
+    /// Sends a bracketed paste to the default session.
+    pub async fn send_paste(&self, text: &str) -> Result<usize> {
+        self.send_paste_session(DEFAULT_SESSION_ID, text).await
+    }
+
+    /// Waits for the expectation's pattern and returns the matched text.
+    ///
+    /// See [`ExpectTarget`] for where the pattern is searched.
+    pub async fn expect_session(
+        &self,
+        session_id: &str,
+        expectation: &Expectation,
+    ) -> Result<String> {
+        let Expectation {
+            pattern,
+            target,
+            timeout,
+        } = expectation;
+        let (output, terminal) = self
+            .with_session(session_id, |s| {
+                (Arc::clone(&s.output), Arc::clone(&s.terminal))
+            })
+            .await?;
+
+        match target {
+            ExpectTarget::Screen => output
+                .wait_for(*timeout, || {
+                    pattern.find_in(&screen_text(&lock_terminal(&terminal)))
+                })
+                .await
+                .map_err(|e| {
+                    let screen = screen_text(&lock_terminal(&terminal));
+                    anyhow::anyhow!(
+                        "pattern '{}' not found on screen: {e}. Current screen:\n{screen}",
+                        pattern.source()
+                    )
+                }),
+            ExpectTarget::Stream => match output.expect(pattern, *timeout).await {
+                Ok(found) => Ok(found.matched),
+                Err(e) => Err(anyhow::anyhow!(
+                    "pattern '{}' not found in output: {e}. Unread output (last {ERROR_TAIL_CHARS} chars):\n{}",
+                    pattern.source(),
+                    output.unread_tail(ERROR_TAIL_CHARS)
+                )),
+            },
+        }
+    }
+
+    /// Waits for an expectation in the default session.
+    pub async fn expect(&self, expectation: &Expectation) -> Result<String> {
+        self.expect_session(DEFAULT_SESSION_ID, expectation).await
+    }
+
+    /// Waits until the session produces no output for `quiet_period`.
+    pub async fn wait_stable_session(
+        &self,
+        session_id: &str,
+        quiet_period: Duration,
+        max_wait: Duration,
+    ) -> Result<()> {
+        let output = self
+            .with_session(session_id, |s| Arc::clone(&s.output))
+            .await?;
+        output
+            .wait_stable(quiet_period, max_wait)
+            .await
+            .map_err(|e| anyhow::anyhow!("output did not stay quiet for {quiet_period:?}: {e}"))
+    }
+
+    /// Waits until the default session produces no output for `quiet_period`.
+    pub async fn wait_stable(&self, quiet_period: Duration, max_wait: Duration) -> Result<()> {
+        self.wait_stable_session(DEFAULT_SESSION_ID, quiet_period, max_wait)
+            .await
+    }
+
+    /// Runs shell commands one at a time, waiting for the prompt after each.
+    ///
+    /// Output that arrived before the call is ignored. The terminal's echo of each command is
+    /// skipped before looking for the prompt, so a command containing the prompt text can't
+    /// match its own echo. Stops at the first command whose prompt doesn't appear within
+    /// `timeout_per_command`.
+    pub async fn run_script_session(
+        &self,
+        session_id: &str,
+        script: &Script<'_>,
+    ) -> Result<ScriptOutcome> {
+        let Script {
+            commands,
+            prompt,
+            timeout_per_command,
+        } = script;
+        let newline = Pattern::literal("\n")?;
+        let output = self
+            .with_session(session_id, |s| Arc::clone(&s.output))
+            .await?;
+
+        // Earlier output, such as a prompt already on screen, must not satisfy the first wait
+        output.mark_all_read();
+
+        let mut steps = Vec::with_capacity(commands.len());
+        for (index, command) in commands.iter().enumerate() {
+            let step_number = index + 1;
+            let stop = |reason: String| {
+                Ok(ScriptOutcome {
+                    steps: steps.clone(),
+                    error: Some(format!("command {step_number} ('{command}'): {reason}")),
+                })
+            };
+            let deadline = Instant::now() + *timeout_per_command;
+
+            if let Err(e) = self
+                .write_input(session_id, format!("{command}\r").as_bytes())
+                .await
+            {
+                return stop(format!("{e:#}"));
+            }
+
+            let mut text = String::new();
+            match output
+                .expect(&newline, deadline.saturating_duration_since(Instant::now()))
+                .await
+            {
+                // The echoed line holds the command (possibly after an earlier prompt): skip it
+                Ok(echo) if echo.before.contains(command.trim()) => {}
+                // No echo (e.g. echo disabled): the line is the command's own output
+                Ok(first_line) => {
+                    text.push_str(&first_line.before);
+                    text.push('\n');
+                }
+                Err(e) => {
+                    return stop(format!(
+                        "no output: {e}. Unread output:\n{}",
+                        output.unread_tail(ERROR_TAIL_CHARS)
+                    ));
+                }
+            }
+
+            match output
+                .expect(prompt, deadline.saturating_duration_since(Instant::now()))
+                .await
+            {
+                Ok(found) => {
+                    text.push_str(&found.before);
+                    steps.push(ScriptStep {
+                        command: command.clone(),
+                        output: text.trim().to_string(),
+                    });
+                }
+                Err(e) => {
+                    return stop(format!(
+                        "prompt '{}' not seen: {e}. Unread output (last {ERROR_TAIL_CHARS} chars):\n{}",
+                        prompt.source(),
+                        output.unread_tail(ERROR_TAIL_CHARS)
+                    ));
+                }
+            }
+        }
+
+        Ok(ScriptOutcome { steps, error: None })
+    }
+
+    /// Runs shell commands in the default session.
+    pub async fn run_script(&self, script: &Script<'_>) -> Result<ScriptOutcome> {
+        self.run_script_session(DEFAULT_SESSION_ID, script).await
     }
 
     /// Resizes the PTY window and the screen grid of the target session.
@@ -362,15 +601,19 @@ impl PtyManager {
     }
 
     /// Reads the current screen of the target session formatted with semantic tags.
+    ///
+    /// Everything already rendered counts as seen: later stream expects only match newer output.
     pub async fn read_screen_session(&self, session_id: &str) -> Result<String> {
-        let terminal = self
-            .with_session(session_id, |s| Arc::clone(&s.terminal))
+        let (terminal, output) = self
+            .with_session(session_id, |s| {
+                (Arc::clone(&s.terminal), Arc::clone(&s.output))
+            })
             .await?;
 
-        let terminal = terminal
-            .lock()
-            .map_err(|_| anyhow::anyhow!("failed to acquire lock on terminal"))?;
-
+        // The reader pushes output while holding the terminal lock, so the screen and the
+        // read position are consistent here
+        let terminal = lock_terminal(&terminal);
+        output.mark_all_read();
         Ok(format_screen(&terminal))
     }
 
@@ -427,12 +670,21 @@ impl PtyManager {
     }
 }
 
-fn run_pty_reader(
-    mut reader: File,
-    terminal: &Arc<std::sync::Mutex<Term<VoidListener>>>,
-    recorder: &SharedRecorder,
-    shutdown_flag: &Arc<AtomicBool>,
-) {
+/// Everything the reader thread writes PTY output to.
+struct ReaderSinks {
+    terminal: Arc<std::sync::Mutex<Term<VoidListener>>>,
+    output: Arc<SessionOutput>,
+    recorder: SharedRecorder,
+    shutdown_flag: Arc<AtomicBool>,
+}
+
+fn run_pty_reader(mut reader: File, sinks: &ReaderSinks) {
+    let ReaderSinks {
+        terminal,
+        output,
+        recorder,
+        shutdown_flag,
+    } = sinks;
     let mut buffer = [0u8; 4096];
     let mut parser: Processor<StdSyncHandler> = Processor::new();
 
@@ -444,9 +696,11 @@ fn run_pty_reader(
             }
             Ok(n) => {
                 let chunk = &buffer[..n];
-                if let Ok(mut term) = terminal.lock() {
-                    parser.advance(&mut *term, chunk);
-                }
+                let mut term = lock_terminal(terminal);
+                parser.advance(&mut *term, chunk);
+                // Pushed under the terminal lock so readers see screen and stream together
+                output.push(chunk);
+                drop(term);
                 if let Ok(mut rec_guard) = recorder.lock()
                     && let Some(rec) = rec_guard.as_mut()
                 {
@@ -459,6 +713,7 @@ fn run_pty_reader(
             }
         }
     }
+    output.close();
 }
 
 #[cfg(test)]
