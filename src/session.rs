@@ -35,6 +35,9 @@ const PASTE_END: &str = "\x1b[201~";
 /// How much recent output or screen text to include in a failed wait's error message.
 const ERROR_TAIL_CHARS: usize = 500;
 
+/// How long `terminate` waits for the reader thread before giving up on it.
+const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Information about a running process session.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProcessInfo {
@@ -640,10 +643,27 @@ impl TuiSession {
 
         let handle = self.reader_handle.lock().ok().and_then(|mut h| h.take());
         if let Some(handle) = handle {
-            let _ = tokio::task::spawn_blocking(move || {
+            let join = tokio::task::spawn_blocking(move || {
                 let _ = handle.join();
-            })
-            .await;
+            });
+            // Never let teardown hang on a reader that doesn't see the exit: kill the child
+            // directly and leave the reader thread behind
+            if tokio::time::timeout(READER_JOIN_TIMEOUT, join)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    "PTY reader didn't stop within {READER_JOIN_TIMEOUT:?}; sending SIGKILL"
+                );
+                #[cfg(unix)]
+                if let Some(pid) = self.info().pid {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-KILL", &pid.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+            }
         }
 
         if let Ok(mut rec_guard) = self.recorder.lock()
