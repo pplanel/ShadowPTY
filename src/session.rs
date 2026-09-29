@@ -2,7 +2,7 @@
 //! background output reader, and synchronous/asynchronous interactions.
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{PipeReader, PipeWriter, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
@@ -16,6 +16,9 @@ use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 use anyhow::{Context, Result};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+use rustix_openpty::openpty;
+use rustix_openpty::rustix::termios::Winsize;
 
 use crate::input::parse_input_keys;
 use crate::output::{Pattern, SessionOutput};
@@ -158,7 +161,7 @@ struct ReaderSinks {
     shutdown_flag: Arc<AtomicBool>,
 }
 
-fn run_pty_reader(mut reader: File, sinks: &ReaderSinks) {
+fn run_pty_reader(mut reader: File, child_exit: &PipeReader, sinks: &ReaderSinks) {
     let ReaderSinks {
         terminal,
         output,
@@ -169,12 +172,20 @@ fn run_pty_reader(mut reader: File, sinks: &ReaderSinks) {
     let mut parser: Processor<StdSyncHandler> = Processor::new();
 
     while !shutdown_flag.load(Ordering::Relaxed) {
-        if let Some(deadline) = parser.sync_timeout().sync_timeout()
-            && !wait_readable(&reader, deadline)
-        {
-            parser.stop_sync(&mut *lock_mutex(terminal));
-            output.notify_screen_changed();
-            continue;
+        match next_event(&reader, child_exit, parser.sync_timeout().sync_timeout()) {
+            ReaderEvent::Output => {}
+            // An app that opens a synchronized update (DECSET 2026) and never closes it would
+            // freeze the screen, so flush the frame once its deadline passes, as alacritty's
+            // event loop does
+            ReaderEvent::SyncTimeout => {
+                parser.stop_sync(&mut *lock_mutex(terminal));
+                output.notify_screen_changed();
+                continue;
+            }
+            ReaderEvent::ChildExited => {
+                tracing::debug!("PTY child exited and its output is drained");
+                break;
+            }
         }
         match reader.read(&mut buffer) {
             Ok(0) => {
@@ -202,20 +213,56 @@ fn run_pty_reader(mut reader: File, sinks: &ReaderSinks) {
     output.close();
 }
 
-/// Waits until `reader` has data or `deadline` passes. Returns `false` on timeout.
-fn wait_readable(reader: &File, deadline: std::time::Instant) -> bool {
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let Ok(timeout) = Timespec::try_from(remaining) else {
-        return true;
-    };
-    let mut fds = [PollFd::new(reader, PollFlags::IN)];
+enum ReaderEvent {
+    /// The PTY has output, or an error or EOF that the next read will report.
+    Output,
+    /// A synchronized update is still open after its deadline.
+    SyncTimeout,
+    /// The child exited and all of its output has been read.
+    ChildExited,
+}
+
+/// Waits for PTY output, the end of the child, or `sync_deadline`. Output always comes first, so
+/// `ChildExited` is only returned once the PTY is drained.
+fn next_event(
+    reader: &File,
+    child_exit: &PipeReader,
+    sync_deadline: Option<std::time::Instant>,
+) -> ReaderEvent {
+    let timeout = sync_deadline.and_then(|deadline| {
+        Timespec::try_from(deadline.saturating_duration_since(std::time::Instant::now())).ok()
+    });
+    let mut fds = [
+        PollFd::new(reader, PollFlags::IN),
+        PollFd::new(child_exit, PollFlags::IN),
+    ];
     loop {
-        match poll(&mut fds, Some(&timeout)) {
-            Ok(ready) => return ready > 0,
+        match poll(&mut fds, timeout.as_ref()) {
+            Ok(0) => return ReaderEvent::SyncTimeout,
+            Ok(_) if !fds[0].revents().is_empty() => return ReaderEvent::Output,
+            Ok(_) => return ReaderEvent::ChildExited,
             Err(rustix::io::Errno::INTR) => {}
-            Err(_) => return true,
+            // Let the blocking read surface the error
+            Err(_) => return ReaderEvent::Output,
         }
     }
+}
+
+/// Blocks until the child exits, then closes `notifier` to wake the reader. Uses `WNOWAIT` so
+/// the child is left for `Pty`'s `Drop` to reap.
+fn watch_child_exit(pid: u32, notifier: PipeWriter) {
+    let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+        return;
+    };
+    // Any error other than EINTR means the child is gone (e.g. already reaped)
+    while matches!(
+        waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT
+        ),
+        Err(rustix::io::Errno::INTR)
+    ) {}
+    drop(notifier);
 }
 
 /// An autonomous, self-contained interactive PTY session.
@@ -233,22 +280,36 @@ pub struct TuiSession {
 impl TuiSession {
     /// Allocates a PTY, spawns the command in it and starts the background reader thread.
     pub fn spawn(session_id: &str, config: &PtyConfig<'_>) -> Result<Self> {
-        let size = WindowSize {
-            num_lines: config.rows,
-            num_cols: config.cols,
-            cell_width: 0,
-            cell_height: 0,
-        };
-
         let options = Options {
             shell: Some(Shell::new(config.command.to_string(), config.args.to_vec())),
             ..Options::default()
         };
 
-        let pty = tty::new(&options, size, 0)
-            .map_err(|e| anyhow::anyhow!("failed to allocate pseudo-terminal: {e}"))?;
+        let opened = openpty(
+            None,
+            Some(&Winsize {
+                ws_row: config.rows,
+                ws_col: config.cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            }),
+        )
+        .context("failed to allocate pseudo-terminal")?;
+        // macOS discards unread output shortly after the last slave fd closes, so the reader
+        // keeps one open until it has drained everything the child wrote
+        let slave_keepalive = opened
+            .user
+            .try_clone()
+            .context("failed to clone pty slave")?;
+        let pty = tty::from_fd(&options, 0, opened.controller, opened.user)
+            .map_err(|e| anyhow::anyhow!("failed to spawn '{}': {e}", config.command))?;
 
         let pid = pty.child().id();
+        let (child_exit, exit_notifier) = std::io::pipe().context("failed to create exit pipe")?;
+        thread::Builder::new()
+            .name(format!("shadowpty-exit-{session_id}"))
+            .spawn(move || watch_child_exit(pid, exit_notifier))
+            .context("failed to spawn child exit watcher")?;
 
         let pty_reader = pty.file().try_clone().context("failed to clone pty file")?;
         let pty_writer = pty.file().try_clone().context("failed to clone pty file")?;
@@ -287,7 +348,10 @@ impl TuiSession {
         };
         let reader_handle = thread::Builder::new()
             .name(format!("shadowpty-reader-{session_id}"))
-            .spawn(move || run_pty_reader(pty_reader, &sinks))
+            .spawn(move || {
+                run_pty_reader(pty_reader, &child_exit, &sinks);
+                drop(slave_keepalive);
+            })
             .context("failed to spawn PTY reader thread")?;
 
         Ok(Self {
