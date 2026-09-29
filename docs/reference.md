@@ -182,7 +182,7 @@ agg session.cast session.gif         # GIF via agg
 
 [`examples/neofetch/`](../examples/neofetch/) contains a full recorded session (`fastfetch` in `nix-shell`) with the MCP calls that produced it:
 
-[![asciicast](https://asciinema.org/a/h4tKuB4nJSyDvGUo.svg)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
+[![Recorded session: fastfetch in nix-shell](../assets/demo.gif)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
 
 ---
 
