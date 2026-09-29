@@ -135,8 +135,14 @@ fn bench_output(c: &mut Criterion) {
     let filler: Vec<u8> = frame(1).into_iter().cycle().take(1 << 20).collect();
     group.throughput(Throughput::Bytes(filler.len() as u64));
     for (name, pattern) in [
-        ("expect_literal_1mib", Pattern::literal("NEEDLE-4242").unwrap()),
-        ("expect_regex_1mib", Pattern::regex(r"NEEDLE-\d{4}").unwrap()),
+        (
+            "expect_literal_1mib",
+            Pattern::literal("NEEDLE-4242").unwrap(),
+        ),
+        (
+            "expect_regex_1mib",
+            Pattern::regex(r"NEEDLE-\d{4}").unwrap(),
+        ),
     ] {
         group.bench_function(name, |b| {
             b.iter_batched(
@@ -186,7 +192,8 @@ fn bench_pty(c: &mut Criterion) {
     });
 
     group.bench_function("read_screen", |b| {
-        b.to_async(&rt).iter(|| async { manager.read_screen().await.unwrap() });
+        b.to_async(&rt)
+            .iter(|| async { manager.read_screen().await.unwrap() });
     });
     group.finish();
 
