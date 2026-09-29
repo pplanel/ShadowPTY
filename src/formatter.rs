@@ -89,6 +89,38 @@ pub fn format_screen(term: &Term<VoidListener>) -> String {
     row_strings.join("\n")
 }
 
+/// Renders the visible screen as plain text, without style tags.
+///
+/// Trailing spaces on each row and trailing empty rows are trimmed. Used for screen-mode matching.
+#[must_use]
+pub fn screen_text(term: &Term<VoidListener>) -> String {
+    let grid = term.grid();
+    let mut row_strings = Vec::with_capacity(grid.screen_lines());
+
+    for row_idx in 0..grid.screen_lines() {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let row = &grid[Line(row_idx as i32)];
+        let mut text = String::new();
+        for col_idx in 0..grid.columns() {
+            let cell = &row[Column(col_idx)];
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            text.push(cell.c);
+            if let Some(zerowidth) = cell.zerowidth() {
+                text.extend(zerowidth);
+            }
+        }
+        row_strings.push(text.trim_end().to_string());
+    }
+
+    while row_strings.last().is_some_and(String::is_empty) {
+        row_strings.pop();
+    }
+
+    row_strings.join("\n")
+}
+
 fn format_row(term: &Term<VoidListener>, row_idx: usize, cols: usize, output: &mut String) {
     let mut current_style = CellStyle::default();
     let mut span_text = String::new();
@@ -308,6 +340,14 @@ mod tests {
         parser.advance(&mut term, b"Line 1\r\nLine 2");
         let formatted = format_screen(&term);
         assert_eq!(formatted, "Line 1\nLine 2");
+    }
+
+    #[test]
+    fn test_screen_text_has_no_tags_and_reflects_overwrites() {
+        let mut term = new_term(3, 20);
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+        parser.advance(&mut term, b"\x1b[32mHELLO\x1b[0m\rJ\r\n  x   ");
+        assert_eq!(screen_text(&term), "JELLO\n  x");
     }
 
     #[test]
