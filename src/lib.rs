@@ -7,6 +7,7 @@ pub mod recorder;
 pub mod screen;
 pub mod screenshot;
 pub mod server;
+pub mod session;
 
 // Backwards-compatibility re-exports
 pub mod formatter {
