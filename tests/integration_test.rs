@@ -408,3 +408,203 @@ async fn test_session_tools_route_by_session_id() {
     assert!(!ended.is_error.unwrap_or(false));
     assert!(manager.list_sessions().await.is_empty());
 }
+
+#[tokio::test]
+async fn test_take_screenshot_png_inline_default() {
+    use base64::prelude::*;
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiScreenshotParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+
+    let args = vec!["-c".to_string(), "echo 'INLINE_PNG_TEST'".to_string()];
+    let config = PtyConfig::new("sh", &args, 24, 80);
+    manager.start_app(&config).await.expect("start sh");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Default screenshot must be PNG and return inline MCP Image block
+    let res = server
+        .tui_take_screenshot(Parameters(TuiScreenshotParams::default()))
+        .await
+        .expect("screenshot tool call");
+    assert!(!res.is_error.unwrap_or(false));
+    assert_eq!(res.content.len(), 1);
+
+    let img = res.content[0]
+        .as_image()
+        .expect("expected Image content block");
+    assert_eq!(img.mime_type, "image/png");
+
+    let png_bytes = BASE64_STANDARD.decode(&img.data).expect("valid base64");
+    assert_eq!(
+        &png_bytes[..8],
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+    );
+
+    let cursor = std::io::Cursor::new(&png_bytes);
+    let decoder = png::Decoder::new(cursor);
+    let reader = decoder.read_info().expect("read png info");
+    assert_eq!(reader.info().width, 80 * 9);
+    assert_eq!(reader.info().height, 24 * 18);
+}
+
+#[tokio::test]
+async fn test_take_screenshot_svg_inline() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiScreenshotParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+
+    let args = vec![
+        "-c".to_string(),
+        "echo 'INLINE_SCREENSHOT_TEST'".to_string(),
+    ];
+    let config = PtyConfig::new("sh", &args, 24, 80);
+    manager.start_app(&config).await.expect("start sh");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let res = server
+        .tui_take_screenshot(Parameters(TuiScreenshotParams {
+            format: Some("svg".to_string()),
+            ..Default::default()
+        }))
+        .await
+        .expect("screenshot tool call");
+    assert!(!res.is_error.unwrap_or(false));
+
+    let content_json = serde_json::to_string(&res.content).expect("serialize");
+    assert!(content_json.contains("<svg"));
+    assert!(content_json.contains("INLINE_SCREENSHOT_TEST"));
+}
+
+#[tokio::test]
+async fn test_take_screenshot_png_to_output_path() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiScreenshotParams};
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join(format!("shadowpty_shot_{}.png", std::process::id()));
+    let output_path = file_path.to_string_lossy().to_string();
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+
+    let args = vec!["-c".to_string(), "echo 'FILE_PNG_TEST'".to_string()];
+    let config = PtyConfig::new("sh", &args, 24, 80);
+    manager.start_app(&config).await.expect("start sh");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let res = server
+        .tui_take_screenshot(Parameters(TuiScreenshotParams {
+            output_path: Some(output_path.clone()),
+            ..Default::default()
+        }))
+        .await
+        .expect("screenshot tool call");
+    assert!(!res.is_error.unwrap_or(false));
+
+    let msg = serde_json::to_string(&res.content).expect("serialize");
+    assert!(msg.contains("Saved PNG screenshot"));
+    assert!(msg.contains("80x24 cells"));
+
+    // Verify file content is valid PNG
+    let bytes = std::fs::read(&file_path).expect("read written file");
+    assert_eq!(
+        &bytes[..8],
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+    );
+
+    let _ = std::fs::remove_file(&file_path);
+}
+
+#[tokio::test]
+async fn test_take_screenshot_svg_to_output_path() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiScreenshotParams};
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join(format!("shadowpty_shot_{}.svg", std::process::id()));
+    let output_path = file_path.to_string_lossy().to_string();
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+
+    let args = vec!["-c".to_string(), "echo 'FILE_SCREENSHOT_TEST'".to_string()];
+    let config = PtyConfig::new("sh", &args, 24, 80);
+    manager.start_app(&config).await.expect("start sh");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let res = server
+        .tui_take_screenshot(Parameters(TuiScreenshotParams {
+            format: Some("svg".to_string()),
+            output_path: Some(output_path.clone()),
+            ..Default::default()
+        }))
+        .await
+        .expect("screenshot tool call");
+    assert!(!res.is_error.unwrap_or(false));
+
+    let msg = serde_json::to_string(&res.content).expect("serialize");
+    assert!(msg.contains("Saved SVG screenshot"));
+    assert!(msg.contains("80x24 cells"));
+
+    // Verify file content
+    let content = std::fs::read_to_string(&file_path).expect("read written file");
+    assert!(content.contains("<svg"));
+    assert!(content.contains("FILE_SCREENSHOT_TEST"));
+
+    let _ = std::fs::remove_file(&file_path);
+}
+
+#[tokio::test]
+async fn test_take_screenshot_path_validation() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiScreenshotParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+
+    let args = vec!["30".to_string()];
+    let config = PtyConfig::new("sleep", &args, 24, 80);
+    manager.start_app(&config).await.expect("start sleep");
+
+    // Relative path should fail
+    let rel_res = server
+        .tui_take_screenshot(Parameters(TuiScreenshotParams {
+            output_path: Some("relative/path.svg".to_string()),
+            ..Default::default()
+        }))
+        .await
+        .expect("tool call");
+    assert!(rel_res.is_error.unwrap_or(false));
+    let err_msg = serde_json::to_string(&rel_res.content).expect("serialize");
+    assert!(err_msg.contains("must be an absolute path"));
+
+    // Non-existent directory should fail
+    let bad_dir_res = server
+        .tui_take_screenshot(Parameters(TuiScreenshotParams {
+            output_path: Some("/nonexistent_dir_93817/shot.svg".to_string()),
+            ..Default::default()
+        }))
+        .await
+        .expect("tool call");
+    assert!(bad_dir_res.is_error.unwrap_or(false));
+    let err_msg = serde_json::to_string(&bad_dir_res.content).expect("serialize");
+    assert!(err_msg.contains("Parent directory does not exist"));
+
+    // Unknown session should fail
+    let unknown_sess = server
+        .tui_take_screenshot(Parameters(TuiScreenshotParams {
+            session_id: Some("unknown-session".to_string()),
+            ..Default::default()
+        }))
+        .await
+        .expect("tool call");
+    assert!(unknown_sess.is_error.unwrap_or(false));
+}

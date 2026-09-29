@@ -24,6 +24,13 @@ fn text_result(text: String) -> CallToolResult {
     CallToolResult::success(vec![rmcp::model::ContentBlock::text(text)])
 }
 
+fn image_result(base64_data: String, mime_type: impl Into<String>) -> CallToolResult {
+    CallToolResult::success(vec![rmcp::model::ContentBlock::image(
+        base64_data,
+        mime_type,
+    )])
+}
+
 fn error_result(text: String) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(text)])
 }
@@ -133,6 +140,21 @@ pub struct TuiEndParams {
 /// Parameters for `tui_list_sessions` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TuiListSessionsParams {}
+
+/// Parameters for `tui_take_screenshot` tool.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TuiScreenshotParams {
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+    /// Format of screenshot: "png" (default) or "svg".
+    pub format: Option<String>,
+    /// Optional absolute path where the screenshot file should be saved.
+    pub output_path: Option<String>,
+    /// Whether to include the cursor in the screenshot (default true).
+    pub include_cursor: Option<bool>,
+    /// Scale factor for PNG (1 or 2, default 1).
+    pub scale: Option<u8>,
+}
 
 /// The `ShadowPTY` MCP Server holding the state manager.
 #[derive(Clone)]
@@ -456,6 +478,115 @@ impl ShadowPtyServer {
             Err(e) => Ok(CallToolResult::error(vec![
                 rmcp::model::ContentBlock::text(format!("Failed to terminate session: {e:#}")),
             ])),
+        }
+    }
+
+    /// Takes a screenshot of the current screen state in PNG (or SVG) format.
+    #[tool(
+        name = "tui_take_screenshot",
+        description = "Takes a screenshot of the current terminal screen. Format can be 'png' (default) or 'svg'. If output_path is specified (must be absolute), writes the file to disk; otherwise returns the content directly (base64 PNG image or SVG text)."
+    )]
+    pub async fn tui_take_screenshot(
+        &self,
+        Parameters(params): Parameters<TuiScreenshotParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let format = params.format.as_deref().unwrap_or("png");
+
+        if format != "svg" && format != "png" {
+            return Ok(error_result(format!(
+                "Unsupported screenshot format '{format}'. Supported formats: 'png', 'svg'"
+            )));
+        }
+
+        if let Some(ref path_str) = params.output_path {
+            let path = std::path::Path::new(path_str);
+            if !path.is_absolute() {
+                return Ok(error_result(format!(
+                    "output_path must be an absolute path: '{path_str}'"
+                )));
+            }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+                && !parent.exists()
+            {
+                return Ok(error_result(format!(
+                    "Parent directory does not exist for output_path: '{}'",
+                    parent.display()
+                )));
+            }
+        }
+
+        let mut snapshot = match self.manager.snapshot_session(session_id).await {
+            Ok(snap) => snap,
+            Err(e) => return Ok(error_result(format!("Failed to take snapshot: {e:#}"))),
+        };
+
+        if params.include_cursor == Some(false) {
+            snapshot.cursor = None;
+        }
+
+        if format == "png" {
+            let scale = params.scale.unwrap_or(1);
+            let options = crate::rasterizer::PngOptions {
+                scale,
+                cursor_color: crate::palette::DEFAULT_FOREGROUND,
+            };
+            let png_bytes = match crate::rasterizer::render_png(&snapshot, options) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return Ok(error_result(format!(
+                        "Failed to render PNG screenshot: {e:#}"
+                    )));
+                }
+            };
+
+            if let Some(ref path_str) = params.output_path {
+                match tokio::fs::write(path_str, &png_bytes).await {
+                    Ok(()) => {
+                        let scale_usize = usize::from(options.scale.clamp(1, 4));
+                        let pixel_w = usize::from(snapshot.cols) * (9 * scale_usize);
+                        let pixel_h = usize::from(snapshot.rows) * (18 * scale_usize);
+                        let bytes = png_bytes.len();
+                        let msg = format!(
+                            "Saved PNG screenshot to '{path_str}' ({}x{} cells, {pixel_w}x{pixel_h} px, {bytes} bytes)",
+                            snapshot.cols, snapshot.rows
+                        );
+                        Ok(text_result(msg))
+                    }
+                    Err(e) => Ok(error_result(format!(
+                        "Failed to write screenshot to '{path_str}': {e:#}"
+                    ))),
+                }
+            } else {
+                let b64 = crate::rasterizer::png_to_base64(&png_bytes);
+                Ok(image_result(b64, "image/png"))
+            }
+        } else {
+            let theme = crate::screenshot::Theme::default();
+            let svg = crate::screenshot::render_svg(&snapshot, &theme);
+
+            if let Some(ref path_str) = params.output_path {
+                match tokio::fs::write(path_str, svg.as_bytes()).await {
+                    Ok(()) => {
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let pixel_w = (f64::from(snapshot.cols) * theme.cell_width) as usize;
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let pixel_h = (f64::from(snapshot.rows) * theme.cell_height) as usize;
+                        let bytes = svg.len();
+                        let msg = format!(
+                            "Saved SVG screenshot to '{path_str}' ({}x{} cells, {pixel_w}x{pixel_h} px, {bytes} bytes)",
+                            snapshot.cols, snapshot.rows
+                        );
+                        Ok(text_result(msg))
+                    }
+                    Err(e) => Ok(error_result(format!(
+                        "Failed to write screenshot to '{path_str}': {e:#}"
+                    ))),
+                }
+            } else {
+                Ok(text_result(svg))
+            }
         }
     }
 }
