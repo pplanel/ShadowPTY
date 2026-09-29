@@ -4,7 +4,7 @@
 
 ShadowPTY is an MCP server (Rust, stdio) that lets agents run and test TUI applications headlessly: spawn in a PTY, send keys, read the screen with color/style tags, wait for output, take PNG/SVG screenshots, record asciicast v3. The README is for product and QA readers; tool parameters, formats and architecture are in `docs/reference.md`.
 
-`AGENT.md` is the original brief and is outdated (it still describes `vt100`, `portable-pty` and four tools). The design in force is `docs/proposals/RFC-single-emulator-core.md`; screenshots follow `docs/proposals/RFC-screenshots-on-shared-term.md`. Domain vocabulary (Screen, Cell, Tagged Text, Session, …) is in `CONTEXT.md`. Open follow-ups are in `TODO.md`.
+The design in force is `docs/proposals/RFC-single-emulator-core.md`; screenshots follow `docs/proposals/RFC-screenshots-on-shared-term.md`. Domain vocabulary (Screen, Cell, Tagged Text, Session, …) is in `CONTEXT.md`. Open follow-ups are in `TODO.md`.
 
 ## Commands
 
