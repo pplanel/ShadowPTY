@@ -1,14 +1,37 @@
 //! PTY management and TUI screen state synchronization for ShadowPTY.
 
+use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
-use portable_pty::{Child, CommandBuilder, MasterPty, PtyPair, PtySize, native_pty_system};
 use tokio::sync::Mutex;
-use vt100::Parser;
+
+use alacritty_terminal::event::{OnResize, VoidListener, WindowSize};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::tty::{self, Options, Pty, Shell};
+use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+
+struct TermSize {
+    columns: usize,
+    screen_lines: usize,
+}
+
+impl Dimensions for TermSize {
+    fn total_lines(&self) -> usize {
+        self.screen_lines
+    }
+    fn screen_lines(&self) -> usize {
+        self.screen_lines
+    }
+    fn columns(&self) -> usize {
+        self.columns
+    }
+}
 
 use crate::formatter::format_screen;
 use crate::input::parse_input_keys;
@@ -55,10 +78,9 @@ impl<'a> PtyConfig<'a> {
 /// Active PTY session state.
 pub struct TuiSession {
     pub info: ProcessInfo,
-    pub parser: Arc<std::sync::Mutex<Parser>>,
-    pub writer: Box<dyn Write + Send>,
-    pub master: Box<dyn MasterPty + Send>,
-    pub child: Box<dyn Child + Send + Sync>,
+    pub terminal: Arc<std::sync::Mutex<Term<VoidListener>>>,
+    pub pty_writer: File,
+    pub pty: Pty,
     recorder: SharedRecorder,
     shutdown_flag: Arc<AtomicBool>,
     _reader_handle: Option<JoinHandle<()>>,
@@ -67,37 +89,19 @@ pub struct TuiSession {
 impl Drop for TuiSession {
     fn drop(&mut self) {
         #[cfg(unix)]
-        if let Some(pid) = self.child.process_id() {
-            // Signal the entire process group (-pid) to ensure any child processes spawned
-            // by the session leader are terminated rather than orphaned to init.
+        {
+            let pid = self.pty.child().id();
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", &format!("-{pid}")])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();
         }
-        let _ = self.child.kill();
-        let mut exit_status = self.child.try_wait().ok().flatten();
-        if exit_status.is_none() {
-            for _ in 0..10 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                if let Ok(Some(status)) = self.child.try_wait() {
-                    exit_status = Some(status);
-                    break;
-                }
-            }
-        }
-        if exit_status.is_none()
-            && let Ok(status) = self.child.wait()
-        {
-            exit_status = Some(status);
-        }
         self.shutdown_flag.store(true, Ordering::SeqCst);
         if let Ok(mut rec_guard) = self.recorder.lock()
             && let Some(rec) = rec_guard.as_mut()
         {
-            let code = exit_status.map_or(0, |status| i32::from(!status.success()));
-            let _ = rec.record_exit(code);
+            let _ = rec.record_exit(0);
         }
     }
 }
@@ -116,46 +120,44 @@ impl PtyManager {
         }
     }
 
-    /// Spawns a new TUI application inside a PTY, terminating any previous session.
     pub async fn start_app(&self, config: &PtyConfig<'_>) -> Result<ProcessInfo> {
         let mut session_lock = self.session.lock().await;
 
-        // Drop existing session gracefully
         *session_lock = None;
 
-        let pty_system = native_pty_system();
-        let size = PtySize {
-            rows: config.rows,
-            cols: config.cols,
-            pixel_width: 0,
-            pixel_height: 0,
+        let size = WindowSize {
+            num_lines: config.rows,
+            num_cols: config.cols,
+            cell_width: 0,
+            cell_height: 0,
         };
 
-        let PtyPair { master, slave } = pty_system
-            .openpty(size)
-            .context("failed to allocate pseudo-terminal")?;
+        let options = Options {
+            shell: Some(Shell::new(config.command.to_string(), config.args.to_vec())),
+            ..Options::default()
+        };
 
-        let mut cmd = CommandBuilder::new(config.command);
-        for arg in config.args {
-            cmd.arg(arg);
+        let pty = tty::new(&options, size, 0)
+            .map_err(|e| anyhow::anyhow!("failed to allocate pseudo-terminal: {e}"))?;
+
+        let pid = pty.child().id();
+
+        let pty_reader = pty.file().try_clone().context("failed to clone pty file")?;
+        let pty_writer = pty.file().try_clone().context("failed to clone pty file")?;
+
+        if let Ok(flags) = fcntl_getfl(&pty_reader) {
+            let _ = fcntl_setfl(&pty_reader, flags.difference(OFlags::NONBLOCK));
         }
 
-        let child = slave
-            .spawn_command(cmd)
-            .with_context(|| format!("failed to spawn command '{}' in PTY", config.command))?;
+        let term_size = TermSize {
+            columns: config.cols as usize,
+            screen_lines: config.rows as usize,
+        };
 
-        let pid = child.process_id();
-        let reader = master
-            .try_clone_reader()
-            .context("failed to clone master PTY reader")?;
-        let writer = master
-            .take_writer()
-            .context("failed to take master PTY writer")?;
-
-        let parser = Arc::new(std::sync::Mutex::new(Parser::new(
-            config.rows,
-            config.cols,
-            0,
+        let terminal = Arc::new(std::sync::Mutex::new(Term::new(
+            Config::default(),
+            &term_size,
+            VoidListener,
         )));
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
@@ -168,19 +170,23 @@ impl PtyManager {
             Arc::new(std::sync::Mutex::new(None))
         };
 
-        // Background reader thread feeding bytes to vt100::Parser and recorder
-        let reader_parser = Arc::clone(&parser);
+        let reader_terminal = Arc::clone(&terminal);
         let reader_shutdown = Arc::clone(&shutdown_flag);
         let reader_recorder = Arc::clone(&recorder);
         let reader_handle = thread::Builder::new()
             .name("shadowpty-reader".to_string())
             .spawn(move || {
-                run_pty_reader(reader, &reader_parser, &reader_recorder, &reader_shutdown);
+                run_pty_reader(
+                    pty_reader,
+                    &reader_terminal,
+                    &reader_recorder,
+                    &reader_shutdown,
+                );
             })
             .context("failed to spawn PTY reader thread")?;
 
         let info = ProcessInfo {
-            pid,
+            pid: Some(pid),
             command: config.command.to_string(),
             rows: config.rows,
             cols: config.cols,
@@ -188,10 +194,9 @@ impl PtyManager {
 
         *session_lock = Some(TuiSession {
             info: info.clone(),
-            parser,
-            writer,
-            master,
-            child,
+            terminal,
+            pty_writer,
+            pty,
             recorder,
             shutdown_flag,
             _reader_handle: Some(reader_handle),
@@ -201,7 +206,6 @@ impl PtyManager {
         Ok(info)
     }
 
-    /// Sends keystrokes with symbolic tokens (e.g. `<ENTER>`, `<UP>`) to the PTY.
     pub async fn send_input(&self, keys: &str) -> Result<usize> {
         let mut session_lock = self.session.lock().await;
         let session = session_lock
@@ -210,11 +214,11 @@ impl PtyManager {
 
         let bytes = parse_input_keys(keys);
         session
-            .writer
+            .pty_writer
             .write_all(&bytes)
             .context("failed to write keys to PTY")?;
         session
-            .writer
+            .pty_writer
             .flush()
             .context("failed to flush PTY writer")?;
 
@@ -229,27 +233,28 @@ impl PtyManager {
         Ok(bytes.len())
     }
 
-    /// Resizes the PTY terminal window and updates the screen parser dimensions.
     pub async fn resize(&self, rows: u16, cols: u16) -> Result<(u16, u16)> {
         let mut session_lock = self.session.lock().await;
         let session = session_lock
             .as_mut()
             .context("no active PTY session; call tui_start first")?;
 
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
+        let size = WindowSize {
+            num_lines: rows,
+            num_cols: cols,
+            cell_width: 0,
+            cell_height: 0,
         };
 
-        session
-            .master
-            .resize(size)
-            .context("failed to resize PTY master")?;
+        session.pty.on_resize(size);
 
-        if let Ok(mut parser) = session.parser.lock() {
-            parser.screen_mut().set_size(rows, cols);
+        let term_size = TermSize {
+            columns: cols as usize,
+            screen_lines: rows as usize,
+        };
+
+        if let Ok(mut terminal) = session.terminal.lock() {
+            terminal.resize(term_size);
         }
 
         session.info.rows = rows;
@@ -266,36 +271,29 @@ impl PtyManager {
         Ok((rows, cols))
     }
 
-    /// Reads the current TUI screen state formatted with semantic tags.
     pub async fn read_screen(&self) -> Result<String> {
         let session_lock = self.session.lock().await;
         let session = session_lock
             .as_ref()
             .context("no active PTY session; call tui_start first")?;
 
-        let parser = session
-            .parser
+        let terminal = session
+            .terminal
             .lock()
-            .map_err(|_| anyhow::anyhow!("failed to acquire lock on vt100 parser"))?;
+            .map_err(|_| anyhow::anyhow!("failed to acquire lock on terminal"))?;
 
-        let result = format_screen(parser.screen());
-        drop(parser);
+        let result = format_screen(&terminal);
+        drop(terminal);
         drop(session_lock);
 
         Ok(result)
     }
 
-    /// Checks if a session is currently active.
     pub async fn is_active(&self) -> bool {
         let session_lock = self.session.lock().await;
         session_lock.is_some()
     }
 
-    /// Stops the currently active PTY session, terminating the child process and cleaning up resources.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if there is no active session.
     pub async fn stop_app(&self) -> Result<ProcessInfo> {
         let mut session_lock = self.session.lock().await;
         let session = session_lock
@@ -309,24 +307,24 @@ impl PtyManager {
 }
 
 fn run_pty_reader(
-    mut reader: Box<dyn Read + Send>,
-    parser: &Arc<std::sync::Mutex<Parser>>,
+    mut reader: File,
+    terminal: &Arc<std::sync::Mutex<Term<VoidListener>>>,
     recorder: &SharedRecorder,
     shutdown_flag: &Arc<AtomicBool>,
 ) {
     let mut buffer = [0u8; 4096];
+    let mut parser: Processor<StdSyncHandler> = Processor::new();
 
     while !shutdown_flag.load(Ordering::Relaxed) {
         match reader.read(&mut buffer) {
             Ok(0) => {
-                // EOF reached (child closed or exited)
                 tracing::debug!("PTY reader reached EOF");
                 break;
             }
             Ok(n) => {
                 let chunk = &buffer[..n];
-                if let Ok(mut locked_parser) = parser.lock() {
-                    locked_parser.process(chunk);
+                if let Ok(mut term) = terminal.lock() {
+                    parser.advance(&mut *term, chunk);
                 }
                 if let Ok(mut rec_guard) = recorder.lock()
                     && let Some(rec) = rec_guard.as_mut()
@@ -356,11 +354,15 @@ mod tests {
         assert_eq!(info.rows, 10);
         assert_eq!(info.cols, 40);
 
-        // Give echo a moment to write and exit
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-
-        let screen = mgr.read_screen().await.unwrap();
-        assert!(screen.contains("hello shadowpty"));
+        let mut screen = String::new();
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            screen = mgr.read_screen().await.unwrap();
+            if screen.contains("hello shadowpty") {
+                break;
+            }
+        }
+        assert!(screen.contains("hello shadowpty"), "screen was: {screen}");
     }
 
     #[tokio::test]
@@ -377,7 +379,6 @@ mod tests {
     #[tokio::test]
     async fn test_pty_stop_app() {
         let mgr = PtyManager::new();
-        // Stop with no session returns error
         assert!(mgr.stop_app().await.is_err());
 
         let cfg = PtyConfig::new("cat", &[], 10, 40);
@@ -388,7 +389,6 @@ mod tests {
         assert_eq!(info.command, "cat");
         assert!(!mgr.is_active().await);
 
-        // Subsequent stop returns error
         assert!(mgr.stop_app().await.is_err());
     }
 }
