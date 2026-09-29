@@ -1,5 +1,6 @@
 //! PTY management and TUI screen state synchronization for ShadowPTY.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -37,6 +38,9 @@ use crate::formatter::format_screen;
 use crate::input::parse_input_keys;
 use crate::recorder::{AsciicastRecorder, SharedRecorder};
 
+/// Session id used when a tool call doesn't specify one.
+pub const DEFAULT_SESSION_ID: &str = "default";
+
 /// Information about a running process session.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProcessInfo {
@@ -44,6 +48,18 @@ pub struct ProcessInfo {
     pub command: String,
     pub rows: u16,
     pub cols: u16,
+    pub session_id: String,
+}
+
+/// Summary of an active session for listing.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub command: String,
+    pub pid: Option<u32>,
+    pub rows: u16,
+    pub cols: u16,
+    pub recording: bool,
 }
 
 /// Configuration for spawning a PTY command.
@@ -79,52 +95,16 @@ impl<'a> PtyConfig<'a> {
 pub struct TuiSession {
     pub info: ProcessInfo,
     pub terminal: Arc<std::sync::Mutex<Term<VoidListener>>>,
-    pub pty_writer: File,
+    pty_writer: Arc<std::sync::Mutex<File>>,
     pub pty: Pty,
     recorder: SharedRecorder,
     shutdown_flag: Arc<AtomicBool>,
     _reader_handle: Option<JoinHandle<()>>,
 }
 
-impl Drop for TuiSession {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        {
-            let pid = self.pty.child().id();
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &format!("-{pid}")])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-        self.shutdown_flag.store(true, Ordering::SeqCst);
-        if let Ok(mut rec_guard) = self.recorder.lock()
-            && let Some(rec) = rec_guard.as_mut()
-        {
-            let _ = rec.record_exit(0);
-        }
-    }
-}
-
-/// Thread-safe manager for the current headless PTY session.
-#[derive(Clone, Default)]
-pub struct PtyManager {
-    session: Arc<Mutex<Option<TuiSession>>>,
-}
-
-impl PtyManager {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            session: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub async fn start_app(&self, config: &PtyConfig<'_>) -> Result<ProcessInfo> {
-        let mut session_lock = self.session.lock().await;
-
-        *session_lock = None;
-
+impl TuiSession {
+    /// Allocates a PTY, spawns the command in it and starts the background reader thread.
+    fn spawn(session_id: &str, config: &PtyConfig<'_>) -> Result<Self> {
         let size = WindowSize {
             num_lines: config.rows,
             num_cols: config.cols,
@@ -174,7 +154,7 @@ impl PtyManager {
         let reader_shutdown = Arc::clone(&shutdown_flag);
         let reader_recorder = Arc::clone(&recorder);
         let reader_handle = thread::Builder::new()
-            .name("shadowpty-reader".to_string())
+            .name(format!("shadowpty-reader-{session_id}"))
             .spawn(move || {
                 run_pty_reader(
                     pty_reader,
@@ -185,59 +165,164 @@ impl PtyManager {
             })
             .context("failed to spawn PTY reader thread")?;
 
-        let info = ProcessInfo {
-            pid: Some(pid),
-            command: config.command.to_string(),
-            rows: config.rows,
-            cols: config.cols,
-        };
-
-        *session_lock = Some(TuiSession {
-            info: info.clone(),
+        Ok(Self {
+            info: ProcessInfo {
+                pid: Some(pid),
+                command: config.command.to_string(),
+                rows: config.rows,
+                cols: config.cols,
+                session_id: session_id.to_string(),
+            },
             terminal,
-            pty_writer,
+            pty_writer: Arc::new(std::sync::Mutex::new(pty_writer)),
             pty,
             recorder,
             shutdown_flag,
             _reader_handle: Some(reader_handle),
-        });
-        drop(session_lock);
+        })
+    }
+}
+
+impl Drop for TuiSession {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let pid = self.pty.child().id();
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &format!("-{pid}")])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        self.shutdown_flag.store(true, Ordering::SeqCst);
+        if let Ok(mut rec_guard) = self.recorder.lock()
+            && let Some(rec) = rec_guard.as_mut()
+        {
+            let _ = rec.record_exit(0);
+        }
+    }
+}
+
+/// Kills and reaps a session without blocking the async runtime.
+///
+/// Dropping a `TuiSession` runs `kill` on the process group, and dropping its `Pty` waits for
+/// the child to exit, so the drop runs on the blocking thread pool.
+async fn teardown(session: TuiSession) {
+    let _ = tokio::task::spawn_blocking(move || drop(session)).await;
+}
+
+fn no_session(session_id: &str) -> String {
+    format!("no active PTY session with id '{session_id}'; call tui_start first")
+}
+
+/// Thread-safe manager for concurrent headless PTY sessions, keyed by session id.
+#[derive(Clone, Default)]
+pub struct PtyManager {
+    sessions: Arc<Mutex<HashMap<String, TuiSession>>>,
+}
+
+impl PtyManager {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Runs `f` on the session under the map lock, which is released as soon as `f` returns.
+    ///
+    /// Use it to clone out the handles an operation needs, so slow work doesn't block other sessions.
+    async fn with_session<T>(
+        &self,
+        session_id: &str,
+        f: impl FnOnce(&TuiSession) -> T,
+    ) -> Result<T> {
+        let sessions = self.sessions.lock().await;
+        let session = sessions
+            .get(session_id)
+            .with_context(|| no_session(session_id))?;
+        let result = f(session);
+        drop(sessions);
+        Ok(result)
+    }
+
+    /// Spawns a command in a new PTY session, replacing any session with the same id.
+    pub async fn start_session(
+        &self,
+        session_id: &str,
+        config: &PtyConfig<'_>,
+    ) -> Result<ProcessInfo> {
+        // Tear down the old session outside the map lock so other sessions aren't blocked
+        let previous = self.sessions.lock().await.remove(session_id);
+        if let Some(previous) = previous {
+            teardown(previous).await;
+        }
+
+        let session = TuiSession::spawn(session_id, config)?;
+        let info = session.info.clone();
+
+        // A concurrent start with the same id may have inserted in the meantime
+        let replaced = self
+            .sessions
+            .lock()
+            .await
+            .insert(session_id.to_string(), session);
+        if let Some(replaced) = replaced {
+            teardown(replaced).await;
+        }
 
         Ok(info)
     }
 
-    pub async fn send_input(&self, keys: &str) -> Result<usize> {
-        let mut session_lock = self.session.lock().await;
-        let session = session_lock
-            .as_mut()
-            .context("no active PTY session; call tui_start first")?;
+    /// Starts the default session.
+    pub async fn start_app(&self, config: &PtyConfig<'_>) -> Result<ProcessInfo> {
+        self.start_session(DEFAULT_SESSION_ID, config).await
+    }
+
+    /// Sends keystrokes with symbolic tokens (e.g. `<ENTER>`, `<UP>`) to the target session.
+    pub async fn send_input_session(&self, session_id: &str, keys: &str) -> Result<usize> {
+        let (writer, recorder) = self
+            .with_session(session_id, |s| {
+                (Arc::clone(&s.pty_writer), Arc::clone(&s.recorder))
+            })
+            .await?;
 
         let bytes = parse_input_keys(keys);
-        session
-            .pty_writer
-            .write_all(&bytes)
-            .context("failed to write keys to PTY")?;
-        session
-            .pty_writer
-            .flush()
-            .context("failed to flush PTY writer")?;
+        {
+            let mut writer = writer
+                .lock()
+                .map_err(|_| anyhow::anyhow!("failed to acquire lock on PTY writer"))?;
+            writer
+                .write_all(&bytes)
+                .context("failed to write keys to PTY")?;
+            writer.flush().context("failed to flush PTY writer")?;
+        }
 
-        if let Ok(mut rec_guard) = session.recorder.lock()
+        if let Ok(mut rec_guard) = recorder.lock()
             && let Some(rec) = rec_guard.as_mut()
         {
             let _ = rec.record_input(&bytes);
         }
 
-        drop(session_lock);
-
         Ok(bytes.len())
     }
 
-    pub async fn resize(&self, rows: u16, cols: u16) -> Result<(u16, u16)> {
-        let mut session_lock = self.session.lock().await;
-        let session = session_lock
-            .as_mut()
-            .context("no active PTY session; call tui_start first")?;
+    /// Sends input to the default session.
+    pub async fn send_input(&self, keys: &str) -> Result<usize> {
+        self.send_input_session(DEFAULT_SESSION_ID, keys).await
+    }
+
+    /// Resizes the PTY window and the screen grid of the target session.
+    pub async fn resize_session(
+        &self,
+        session_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<(u16, u16)> {
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .get_mut(session_id)
+            .with_context(|| no_session(session_id))?;
 
         let size = WindowSize {
             num_lines: rows,
@@ -266,43 +351,79 @@ impl PtyManager {
             let _ = rec.record_resize(cols, rows);
         }
 
-        drop(session_lock);
+        drop(sessions);
 
         Ok((rows, cols))
     }
 
-    pub async fn read_screen(&self) -> Result<String> {
-        let session_lock = self.session.lock().await;
-        let session = session_lock
-            .as_ref()
-            .context("no active PTY session; call tui_start first")?;
+    /// Resizes the default session.
+    pub async fn resize(&self, rows: u16, cols: u16) -> Result<(u16, u16)> {
+        self.resize_session(DEFAULT_SESSION_ID, rows, cols).await
+    }
 
-        let terminal = session
-            .terminal
+    /// Reads the current screen of the target session formatted with semantic tags.
+    pub async fn read_screen_session(&self, session_id: &str) -> Result<String> {
+        let terminal = self
+            .with_session(session_id, |s| Arc::clone(&s.terminal))
+            .await?;
+
+        let terminal = terminal
             .lock()
             .map_err(|_| anyhow::anyhow!("failed to acquire lock on terminal"))?;
 
-        let result = format_screen(&terminal);
-        drop(terminal);
-        drop(session_lock);
-
-        Ok(result)
+        Ok(format_screen(&terminal))
     }
 
+    /// Reads the default session screen.
+    pub async fn read_screen(&self) -> Result<String> {
+        self.read_screen_session(DEFAULT_SESSION_ID).await
+    }
+
+    /// Checks if a session with the given id is currently active.
+    pub async fn is_session_active(&self, session_id: &str) -> bool {
+        self.sessions.lock().await.contains_key(session_id)
+    }
+
+    /// Checks if the default session is currently active.
     pub async fn is_active(&self) -> bool {
-        let session_lock = self.session.lock().await;
-        session_lock.is_some()
+        self.is_session_active(DEFAULT_SESSION_ID).await
     }
 
-    pub async fn stop_app(&self) -> Result<ProcessInfo> {
-        let mut session_lock = self.session.lock().await;
-        let session = session_lock
-            .take()
-            .context("no active PTY session; call tui_start first")?;
-        drop(session_lock);
+    /// Lists summaries of all active sessions, sorted by id.
+    pub async fn list_sessions(&self) -> Vec<SessionSummary> {
+        let sessions = self.sessions.lock().await;
+        let mut summaries: Vec<SessionSummary> = sessions
+            .iter()
+            .map(|(id, s)| SessionSummary {
+                id: id.clone(),
+                command: s.info.command.clone(),
+                pid: s.info.pid,
+                rows: s.info.rows,
+                cols: s.info.cols,
+                recording: s.recorder.lock().is_ok_and(|rec| rec.is_some()),
+            })
+            .collect();
+        drop(sessions);
+        summaries.sort_by(|a, b| a.id.cmp(&b.id));
+        summaries
+    }
+
+    /// Stops the target session, killing its process group and reaping the child.
+    pub async fn stop_session(&self, session_id: &str) -> Result<ProcessInfo> {
+        let session = self
+            .sessions
+            .lock()
+            .await
+            .remove(session_id)
+            .with_context(|| no_session(session_id))?;
         let info = session.info.clone();
-        drop(session);
+        teardown(session).await;
         Ok(info)
+    }
+
+    /// Stops the default session.
+    pub async fn stop_app(&self) -> Result<ProcessInfo> {
+        self.stop_session(DEFAULT_SESSION_ID).await
     }
 }
 
@@ -353,6 +474,7 @@ mod tests {
 
         assert_eq!(info.rows, 10);
         assert_eq!(info.cols, 40);
+        assert_eq!(info.session_id, DEFAULT_SESSION_ID);
 
         let mut screen = String::new();
         for _ in 0..20 {
@@ -390,5 +512,27 @@ mod tests {
         assert!(!mgr.is_active().await);
 
         assert!(mgr.stop_app().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_multi_session() {
+        let mgr = PtyManager::new();
+        let cfg1 = PtyConfig::new("cat", &[], 10, 40);
+        let cfg2 = PtyConfig::new("cat", &[], 12, 50);
+
+        mgr.start_session("sess-1", &cfg1).await.unwrap();
+        mgr.start_session("sess-2", &cfg2).await.unwrap();
+
+        let sessions = mgr.list_sessions().await;
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["sess-1", "sess-2"]);
+        assert_eq!((sessions[1].rows, sessions[1].cols), (12, 50));
+
+        mgr.stop_session("sess-1").await.unwrap();
+        assert!(!mgr.is_session_active("sess-1").await);
+        assert!(mgr.is_session_active("sess-2").await);
+
+        mgr.stop_session("sess-2").await.unwrap();
+        assert!(mgr.list_sessions().await.is_empty());
     }
 }
