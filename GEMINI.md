@@ -1,6 +1,6 @@
-# CLAUDE.md
+# GEMINI.md
 
-<!-- Same content as GEMINI.md. Keep both files in sync. -->
+<!-- Same content as CLAUDE.md. Keep both files in sync. -->
 
 ShadowPTY is an MCP server (Rust, stdio) that lets agents run and test TUI applications headlessly: spawn in a PTY, send keys, read the screen with color/style tags, wait for output, take PNG/SVG screenshots, record asciicast v3. The README is for product and QA readers; tool parameters, formats and architecture are in `docs/reference.md`.
 
