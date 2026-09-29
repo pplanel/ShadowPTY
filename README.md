@@ -1,397 +1,180 @@
 # ShadowPTY
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![Rust Edition: 2024](https://img.shields.io/badge/Rust-2024%20(1.88%2B)-orange.svg)](https://www.rust-lang.org)
-[![Asciicast: v3](https://img.shields.io/badge/Asciicast-v3%20Compliant-blueviolet.svg)](https://docs.asciinema.org/manual/asciicast/v3/)
-[![MCP: rmcp 3.4](https://img.shields.io/badge/MCP-rmcp%203.4-green.svg)](https://modelcontextprotocol.io)
+[![MCP server](https://img.shields.io/badge/MCP-server-green.svg)](https://modelcontextprotocol.io)
+[![npm](https://img.shields.io/badge/npm-%40azimovlabs%2Fmcp--shadow--pty-red.svg)](https://www.npmjs.com/package/@azimovlabs/mcp-shadow-pty)
 
-**ShadowPTY** (`shadowpty`) is a high-performance, headless Model Context Protocol (MCP) server written in Rust that enables LLM agents, automated testing suites, and CI pipelines to interactively drive, inspect, and **record** Text User Interface (TUI) applications.
+**Let your AI assistant use terminal apps the way a person does — and prove it works.**
 
-It allocates a real pseudo-terminal (PTY) on macOS and Linux, maintains an in-memory 2D virtual screen grid using `vt100`, parses ANSI escape sequences into token-efficient semantic markup, and **natively records complete interactive sessions in the standard `asciicast v3` format** for immediate replay with `asciinema` or integration into test reports.
+ShadowPTY gives AI assistants (Claude, Gemini, Cursor, …) a real terminal they can operate: open an app, type, press keys, look at the screen, take screenshots, and record everything. That turns "the assistant says it works" into "here's the recording and the screenshot showing it works."
 
----
-
-## Key Features
-
-- 📹 **Native `asciicast v3` Session Recording**:
-  Record complete interactive terminal sessions directly to spec-compliant `.cast` files with microsecond-precision delta timestamps. Captures input (`i`), raw output (`o`), terminal window resizes (`r`), and exit codes (`x`) with zero external daemon dependencies.
-- ⚡ **Native PTY Allocation**:
-  Spawns real interactive processes (shells, `htop`, `lazygit`, custom TUIs) via `portable-pty` with true job control, signals, and process lifecycle management.
-- 🖥️ **Headless Virtual Terminal Buffer**:
-  Maintains an accurate 2D virtual terminal screen state in memory using `vt100`, emulating a full `xterm-256color` terminal without requiring an active X11, Wayland, or Quartz display server.
-- 🏷️ **Semantic Style Tagging for LLMs**:
-  Formats terminal screen reads into concise, XML-like semantic tags (e.g. `<fg:green><bold>SUCCESS</bold></fg>`) that collapse adjacent spans and strip excessive blank padding to minimize LLM token consumption.
-- ⌨️ **Intuitive Key Token Translation**:
-  Accepts readable key tokens like `<ENTER>`, `<ESC>`, `<UP>`, `<DOWN>`, `<TAB>`, `<BACKSPACE>`, `<CTRL+C>`, `<ALT+X>`, and `<F1>`–`<F12>`, as well as raw text input.
-- 🔄 **Dynamic Window Resizing**:
-  Dynamically resize the PTY and virtual screen buffer on the fly (`tui_resize`) to test responsive TUI behavior, re-rendering, and layout adaptability.
-- 🔌 **Native Model Context Protocol (MCP)**:
-  Exposes 10 standardized MCP tools over `stdio` using `rmcp` 3.4+, ready to drop into Claude Desktop, Antigravity (`agy`), Cursor, and custom agent frameworks.
-- 🛡️ **Protocol Isolation & Safety**:
-  Internal diagnostics, traces, and child process logs are strictly piped to `stderr`, guaranteeing that `stdout` remains 100% clean and uncorrupted for JSON-RPC messages.
-- ❄️ **Reproducible Nix Environment**:
-  Includes a Nix Flake (`flake.nix`) providing complete builds via `crane` and a development shell bundled with Rust toolchains and `asciinema`.
+<!-- TODO: replace with a GIF of an agent driving a TUI -->
+[![A recorded ShadowPTY session](https://asciinema.org/a/h4tKuB4nJSyDvGUo.svg)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
 
 ---
 
-## 🛠️ MCP Tools Reference
+## Why it exists
 
-ShadowPTY exposes 10 MCP tools. Every tool except `tui_list_sessions` takes an optional `session_id` (*string*, default: `"default"`), so an agent can drive several applications at once; each session has its own PTY, screen, and recording.
+A lot of software lives in the terminal: CLIs, installers, dashboards like `htop`, Git tools like `lazygit`, editors, REPLs, internal admin tools. These interfaces are hard to test and impossible for an AI assistant to use — it can run a command, but it can't *see* a full-screen app, press arrow keys, or notice that the status bar turned red.
 
-### 1. `tui_start`
-Spawns a command inside a new pseudo-terminal session. Starting a `session_id` that is already running terminates that session first; other sessions are unaffected.
-
-- **Parameters**:
-  - `command` (*string*, required): Executable to launch (e.g. `"htop"`, `"lazygit"`, `"bash"`, `"nix-shell"`).
-  - `args` (*array of strings*, optional): Command-line arguments.
-  - `rows` (*integer*, optional, default: `24`): Initial terminal rows.
-  - `cols` (*integer*, optional, default: `80`): Initial terminal columns.
-  - `record_path` (*string*, optional): Destination path where the session will be recorded in **asciicast v3** format (`.cast`).
-  - `session_id` (*string*, optional, default: `"default"`): Identifier for this session.
-- **Example**:
-  ```json
-  {
-    "command": "htop",
-    "rows": 30,
-    "cols": 100,
-    "record_path": "/tmp/htop-session.cast",
-    "session_id": "htop"
-  }
-  ```
-
-### 2. `tui_input`
-Sends keystrokes, text, and control sequences to the active application's PTY stdin.
-
-- **Parameters**:
-  - `keys` (*string*, required): Text or key tokens.
-  - `session_id` (*string*, optional): Target session.
-- **Supported Special Tokens**:
-  - **Navigation**: `<UP>`, `<DOWN>`, `<LEFT>`, `<RIGHT>`, `<HOME>`, `<END>`, `<PAGEUP>`, `<PAGEDOWN>`
-  - **Control**: `<ENTER>`, `<RETURN>`, `<ESC>`, `<ESCAPE>`, `<TAB>`, `<SPACE>`, `<BACKSPACE>`, `<DELETE>`
-  - **Function Keys**: `<F1>` through `<F12>`
-  - **Modifiers**: `<CTRL+X>` or `<C-X>` (e.g. `<CTRL+C>`, `<CTRL+D>`), `<ALT+X>` or `<M-X>`
-- **Example**:
-  ```json
-  { "keys": "echo 'Hello ShadowPTY'<ENTER>" }
-  ```
-
-### 3. `tui_paste`
-Sends text as a single bracketed paste (DECSET 2004), so shells and editors receive a multiline script as one paste instead of typed keys.
-
-- **Parameters**:
-  - `text` (*string*, required): Text to paste. Text containing the paste end marker (`ESC[201~`) is rejected.
-  - `session_id` (*string*, optional): Target session.
-
-### 4. `tui_expect`
-Waits until a literal or regex pattern appears, instead of sleeping and polling `tui_read`.
-
-- **Parameters**:
-  - `pattern` (*string*, required): Text or regular expression to wait for.
-  - `is_regex` (*boolean*, optional, default: `false`): Treat `pattern` as a regular expression.
-  - `screen_mode` (*boolean*, optional, default: `false`): Match against the rendered screen text instead of new output.
-  - `timeout_ms` (*integer*, optional, default: `10000`, max: `120000`): How long to wait.
-  - `session_id` (*string*, optional): Target session.
-- **Behavior**:
-  - By default it searches output that neither `tui_read` nor an earlier `tui_expect` has returned, so it never matches something the agent already saw. A match consumes the output up to its end.
-  - With `screen_mode`, it matches what is actually drawn, e.g. text built with cursor movements or overwrites.
-  - It fails immediately, with the last output, if the process exits.
-- **Example**:
-  ```json
-  { "pattern": "Build (succeeded|failed)", "is_regex": true, "timeout_ms": 60000 }
-  ```
-
-### 5. `tui_wait_stable`
-Waits until the application has produced no output for a quiet period, so the next `tui_read` sees a finished screen.
-
-- **Parameters**:
-  - `quiet_period_ms` (*integer*, optional, default: `100`): How long output must stay quiet.
-  - `max_wait_ms` (*integer*, optional, default: `3000`, max: `120000`): Give up after this long.
-  - `session_id` (*string*, optional): Target session.
-
-### 6. `tui_run_script`
-Runs shell commands one at a time, waiting for the prompt after each, and returns each command's output.
-
-- **Parameters**:
-  - `commands` (*array of strings*, required): Commands to run in order.
-  - `prompt_pattern` (*string*, optional, default: `"$"`): The prompt the shell prints when a command finishes.
-  - `is_regex` (*boolean*, optional, default: `false`): Treat `prompt_pattern` as a regular expression.
-  - `timeout_ms` (*integer*, optional, default: `30000`, max: `120000`): How long to wait for each command's prompt.
-  - `session_id` (*string*, optional): Target session.
-- **Behavior**: Output from before the call is ignored and the terminal's echo of each command is skipped, so a command containing the prompt text doesn't end its own wait. The script stops at the first command whose prompt doesn't appear in time and reports the output received so far.
-- **Example**:
-  ```json
-  { "commands": ["cargo build", "cargo test"], "prompt_pattern": "READY> " }
-  ```
-
-### 7. `tui_resize`
-Resizes the pseudo-terminal window and virtual screen grid to test responsive layouts and window change handlers.
-
-- **Parameters**:
-  - `rows` (*integer*, required): New row count.
-  - `cols` (*integer*, required): New column count.
-  - `session_id` (*string*, optional): Target session.
-- **Example**:
-  ```json
-  { "rows": 40, "cols": 120 }
-  ```
-
-### 8. `tui_read`
-Captures the current visible state of the terminal screen formatted with semantic style markup. Output shown on the screen counts as seen: a later `tui_expect` only matches newer output.
-
-- **Parameters**:
-  - `session_id` (*string*, optional): Target session.
-- **Example Output**:
-  ```text
-  <fg:green><bold>SUCCESS</bold></fg> Process completed in 0.42s
-  <fg:bright-black>Press [q] to exit</fg>
-  ```
-
-### 9. `tui_list_sessions`
-Lists all active sessions, sorted by id.
-
-- **Parameters**: None.
-- **Example Output**:
-  ```json
-  [
-    { "id": "default", "command": "bash", "pid": 12001, "rows": 24, "cols": 80, "recording": false },
-    { "id": "htop", "command": "htop", "pid": 12345, "rows": 30, "cols": 100, "recording": true }
-  ]
-  ```
-
-### 10. `tui_end`
-Terminates a pseudo-terminal session, killing its whole process group, ensuring the child is reaped from the operating system (preventing zombie processes), and finalizing asciicast recordings.
-
-- **Parameters**:
-  - `session_id` (*string*, optional): Target session.
-- **Example Output**:
-  ```text
-  Terminated session 'htop' for command 'htop' (pid: 12345)
-  ```
+ShadowPTY closes that gap. The assistant gets eyes (the screen, with colors), hands (the keyboard), patience (it can wait for something to appear), and a camera (screenshots and recordings).
 
 ---
 
-## 🏗️ Architecture
+## Who it's for
 
-```mermaid
-flowchart TD
-    Client["MCP Client (LLM / Test Suite)"] <-->|JSON-RPC via stdio| Server["ShadowPTY Server (rmcp)"]
-    Server <--> PtyMgr["PtyManager (Session Manager)"]
+### Product managers and designers
+- **Check a flow without setting anything up.** "Walk through the onboarding wizard and screenshot each step."
+- **Review what users actually see**: colors, layout, error messages, at a real terminal size.
+- **Get artifacts you can share**: PNG screenshots for the ticket, a replayable recording for the demo.
 
-    subgraph PTY Subsystem
-        PtyMgr -->|tui_input| Master["PTY Master (portable-pty)"]
-        PtyMgr -->|tui_resize| Master
-        Master <--> Slave["PTY Slave"] <--> Child["Child Process (TUI App)"]
-    end
+### QA and TDD practitioners
+- **Write the test before the feature** in plain language: *"When I press `q`, a confirmation dialog appears with 'Quit? (y/n)' highlighted."* Let the assistant run it red, implement, run it green.
+- **Assert on what matters**: exact text, where it appears on screen, and its color ("the error line is red", "the selected item is inverted").
+- **No flaky sleeps.** The assistant waits for the text to appear (or for the screen to settle) instead of guessing how long to pause.
+- **Evidence on every run**: a recording and screenshots you can attach to a bug report or CI artifact, and replay step by step.
 
-    subgraph Virtual Screen Buffer
-        Master -->|Raw byte stream| Reader["Reader Thread"]
-        Reader -->|Process bytes| Parser["VT100 Parser (vt100)"]
-        Parser -->|Screen cells| Formatter["Semantic Markup Formatter"]
-        Formatter -->|tui_read response| Server
-    end
+### Developers of CLI and TUI tools
+- Let an assistant **reproduce a bug interactively**, resize the terminal to test layouts, and confirm the fix.
+- Run **several apps side by side** — e.g. a server in one session and a client in another.
 
-    subgraph Asciicast v3 Recorder
-        PtyMgr -.->|Input events i| Recorder["AsciicastRecorder"]
-        PtyMgr -.->|Resize events r| Recorder
-        Reader -.->|Output chunks o| Recorder
-        PtyMgr -.->|Exit code x| Recorder
-        Recorder -->|Auto-flushed stream| CastFile[("session.cast<br/>asciicast v3")]
-    end
+### Agent and platform builders
+- A drop-in [MCP](https://modelcontextprotocol.io) server that gives any agent reliable terminal control, with clean process cleanup.
+
+---
+
+## What it looks like
+
+You ask your assistant, in plain words:
+
+> Open `htop` in a 155×43 terminal. Wait for it to load, take a screenshot, then press F6, choose "memory" and confirm the list is sorted by memory. Record the session.
+
+Behind the scenes the assistant uses ShadowPTY to:
+
+1. **Start** `htop` in a fresh terminal, recording to a file.
+2. **Wait** until the screen stops changing.
+3. **Screenshot** it — the assistant actually sees the image.
+4. **Press** `F6`, then **wait** for the "Sort by" menu to appear.
+5. **Read** the screen and check the order and highlighting.
+6. **Close** the app and everything it started.
+
+And you get back: the answer, the screenshots, and a recording you can replay with `asciinema play`.
+
+What the assistant "reads" is the screen as text, with colors kept:
+
+```text
+<fg:green><bold>✔ 12 tests passed</bold></fg>
+<fg:red>✘ 1 failed: login_rejects_bad_password</fg>
+<inverse> q </inverse> Quit   <inverse> r </inverse> Rerun
 ```
+
 ---
 
-## 📹 Interactive Session Recording (`asciicast v3`)
+## Capabilities at a glance
 
-ShadowPTY features first-class, zero-overhead session recording adhering to the official **[asciicast v3 specification](https://docs.asciinema.org/manual/asciicast/v3/)**.
-
-### Why Record Sessions?
-
-| Use Case | Benefit |
+| | |
 | :--- | :--- |
-| **Agent Visual Audit Trail** | Record exactly what the LLM agent saw, typed, and triggered during complex multi-step terminal tasks. |
-| **CI / Automated Testing Artifacts** | Attach `.cast` files to test runs so failed TUI assertions can be visually inspected and replayed rather than debugging raw logs. |
-| **Demos & Documentation** | Generate reproducible terminal recordings that can be embedded into documentation, rendered to SVG/GIF with tools like `agg`, or played on the web. |
-| **Deterministic Debugging** | Step through exact keystroke sequences and terminal resize events with millisecond precision. |
+| ⌨️ **Type and press keys** | Text, Enter, arrows, F-keys, Ctrl/Alt combos, pasted scripts |
+| 👀 **Read the screen** | Text with colors and styles, exactly as laid out |
+| ⏳ **Wait for things** | Until some text appears, or until the screen settles — no fixed sleeps |
+| 📸 **Screenshots** | PNG the assistant can see, or SVG for pixel-exact comparisons |
+| 🎬 **Recordings** | Standard [asciinema](https://asciinema.org) files with real timing |
+| 📐 **Resize** | Test how the app adapts to small and large windows |
+| 🧩 **Several apps at once** | Each in its own named session |
+| 🧹 **Clean shutdown** | Closing a session stops the app and anything it spawned |
 
-### How It Works
-
-When you supply `record_path` to `tui_start`, ShadowPTY immediately initializes the `.cast` file with a spec-compliant v3 header:
-
-```json
-{"version": 3, "term": {"cols": 100, "rows": 35, "type": "xterm-256color"}, "timestamp": 1726960000, "command": "nix-shell"}
-```
-
-As the session runs, every event is streamed and auto-flushed with relative delta timestamps:
-
-```json
-[0.152, "o", "\u001b[?2004h[nix-shell:~]$ "]
-[1.204, "i", "fastfetch\r"]
-[0.015, "o", "fastfetch\r\n"]
-[0.342, "r", "120x40"]
-[0.850, "x", "0"]
-```
-
-### Replaying Recordings
-
-Because recordings follow standard `asciicast v3`, they can be played back in any terminal with `asciinema`:
-
-```bash
-# Replay with real timing
-asciinema play session.cast
-
-# Replay at 2x speed
-asciinema play -s 2 session.cast
-
-# Render to an animated SVG or GIF (using agg)
-agg session.cast session.gif
-```
+Works on **macOS and Linux**.
 
 ---
 
-## 🚀 Real-World Showcase: Recording `fastfetch` in `nix-shell`
+## Get started
 
-[![asciicast](https://asciinema.org/a/h4tKuB4nJSyDvGUo.svg)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
+### 1. Connect it to your assistant
 
-A complete recorded session is included in [`examples/neofetch/`](examples/neofetch/):
+Nothing to install — it runs through `npx` (requires Node.js):
 
-1. **Started** an isolated `nix-shell -p fastfetch` in a 35x100 PTY session with recording enabled.
-2. **Sent** `fastfetch<ENTER>` to inspect system configuration and hardware details.
-3. **Captured** the formatted screen state containing ANSI color palettes and ASCII art.
-4. **Terminated** cleanly with `exit<ENTER>`.
-
-To view the step-by-step MCP prompt and response logs, see [`examples/neofetch/prompt.md`](examples/neofetch/prompt.md).  
-To replay the actual recorded session:
+**Claude Code**
 
 ```bash
-asciinema play examples/neofetch/recording.cast
+claude mcp add shadow-pty -- npx -y @azimovlabs/mcp-shadow-pty
 ```
 
----
-
-## 📦 Installation & Setup
-
-### Via `npx` (Zero Installation)
-
-Run immediately without compiling:
-
-```bash
-npx -y @azimovlabs/mcp-shadow-pty
-```
-
-### Building from Source
-
-Ensure you have Rust 1.88+ installed:
-
-```bash
-git clone https://github.com/pplanel/ShadowPTY.git
-cd ShadowPTY
-cargo build --release
-```
-
-The compiled binary will be at `target/release/shadowpty`.
-
-### Using Nix Flake
-
-Run directly with Nix without manual compilation:
-
-```bash
-nix run github:pplanel/ShadowPTY
-```
-
-Or enter a reproducible development shell equipped with Rust toolchains and `asciinema`:
-
-```bash
-nix develop
-```
-
----
-
-## 🔌 Integrating with MCP Clients
-
-### Recommended: Via `npx`
-
-#### Claude Desktop / Claude CLI
-
-Add to your `claude_desktop_config.json`:
+**Claude Desktop, Gemini CLI / Antigravity, Cursor and other MCP clients** — add this to the client's MCP config (`claude_desktop_config.json`, `~/.gemini/config/mcp_config.json`, Cursor's MCP settings, …):
 
 ```json
 {
   "mcpServers": {
     "shadow-pty": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@azimovlabs/mcp-shadow-pty"
-      ]
+      "args": ["-y", "@azimovlabs/mcp-shadow-pty"]
     }
   }
 }
 ```
 
-#### Antigravity (`antigravity-cli`)
+Prefer Nix or building from source? See the [technical reference](docs/reference.md#development).
 
-Add to `~/.gemini/config/mcp_config.json`:
+### 2. Ask for something
 
-```json
-{
-  "mcpServers": {
-    "shadow-pty": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@azimovlabs/mcp-shadow-pty"
-      ]
-    }
-  }
-}
-```
+Some prompts to try:
 
-#### Cursor
+- *"Start `bash` in ShadowPTY, run `ls -la`, and tell me what's on screen."*
+- *"Open `vim`, type a short poem, save it as `/tmp/poem.txt`, quit, and show me a screenshot before quitting."*
+- *"Run our CLI's `init` wizard, accept all defaults, and record the session to `/tmp/init.cast`."*
+- *"Test that pressing `?` in our TUI opens the help panel, and that it still fits when the terminal is 80×24."*
 
-Add to your Cursor MCP settings (`command` type):
-- **Command**: `npx`
-- **Args**: `-y`, `@azimovlabs/mcp-shadow-pty`
-
-### Alternative: Via Locally Compiled Binary
-
-```json
-{
-  "mcpServers": {
-    "shadow-pty": {
-      "command": "/path/to/ShadowPTY/target/release/shadowpty",
-      "args": []
-    }
-  }
-}
-```
-
----
-
-## 🧪 Testing & Quality
-
-ShadowPTY includes a comprehensive suite of unit and integration tests covering PTY lifecycle management, ANSI parsing, key translation, and asciicast v3 file recording:
+### 3. Replay what happened
 
 ```bash
-# Run unit and integration tests
-cargo test --all-targets
-
-# Run strict Clippy checks
-cargo clippy --all-targets -- -D warnings
-
-# Check code formatting
-cargo fmt --check
-
-# Check Nix flake packages and apps
-nix flake check
+asciinema play /tmp/init.cast
 ```
 
 ---
 
-## 📄 License
+## Using it for TDD
 
-Licensed under either of:
+A simple loop that works well with an assistant:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+1. **Describe the behavior** as a scenario: *"Given the app is open, when I type `add milk` and press Enter, then 'milk' appears in the list, unchecked."*
+2. **Run it red.** The assistant drives the app and reports what it saw instead (with a screenshot).
+3. **Implement** the change.
+4. **Run it green.** Same scenario, now passing — keep the recording as evidence.
+5. **Check the edges**: small terminal size, long text, the app being slow to respond.
 
-at your option.
+Because the assistant waits for real on-screen events instead of fixed delays, these checks stay reliable as the app gets faster or slower.
+
+---
+
+## FAQ
+
+**Does the app know it's being tested?**
+No. It runs in a real pseudo-terminal, just like when you open it yourself.
+
+**Can it handle full-screen, colorful apps?**
+Yes — it uses the terminal engine from [Alacritty](https://alacritty.org), so layouts, colors, wide characters and redraws render like in a modern terminal. Screenshots and screen text come from the same view, so they always agree.
+
+**What happens if the app crashes?**
+The assistant is told the app exited and gets its last output. ShadowPTY itself keeps running.
+
+**Does it leave processes behind?**
+No. Closing a session stops the app and everything it started.
+
+**Windows?**
+Not yet — macOS and Linux only.
+
+---
+
+## Learn more
+
+- [Technical reference](docs/reference.md) — every tool and parameter, screen format, recording format, architecture.
+- [`examples/neofetch/`](examples/neofetch/) — a full recorded example with the assistant's steps.
+- [Design proposals](docs/proposals/) — how and why it's built this way.
+- [`TODO.md`](TODO.md) — known issues and what's next.
+
+Contributions are welcome: see the development commands in the [technical reference](docs/reference.md#development) and the project guidelines in [`CLAUDE.md`](CLAUDE.md).
+
+---
+
+## License
+
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
