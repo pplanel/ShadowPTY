@@ -1,10 +1,18 @@
-# ShadowPTY
+<p align="center">
+  <img src="assets/logo.png" alt="ShadowPTY logo: a ghost with a terminal prompt for a face, inside a terminal window" width="160">
+</p>
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![MCP server](https://img.shields.io/badge/MCP-server-green.svg)](https://modelcontextprotocol.io)
-[![npm](https://img.shields.io/badge/npm-%40azimovlabs%2Fmcp--shadow--pty-red.svg)](https://www.npmjs.com/package/@azimovlabs/mcp-shadow-pty)
+<h1 align="center">ShadowPTY</h1>
 
-**Let your AI assistant use terminal apps the way a person does — and prove it works.**
+<p align="center">
+  <strong>Let your AI assistant use terminal apps the way a person does — and prove it works.</strong>
+</p>
+
+<p align="center">
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a>
+  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-server-green.svg" alt="MCP server"></a>
+  <a href="https://www.npmjs.com/package/@azimovlabs/mcp-shadow-pty"><img src="https://img.shields.io/npm/v/@azimovlabs/mcp-shadow-pty.svg" alt="npm version"></a>
+</p>
 
 ShadowPTY gives AI assistants (Claude, Gemini, Cursor, …) a real terminal they can operate: open an app, type, press keys, look at the screen, take screenshots, and record everything. That turns "the assistant says it works" into "here's the recording and the screenshot showing it works."
 
