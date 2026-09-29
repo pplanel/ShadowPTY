@@ -16,8 +16,8 @@
 
 ShadowPTY gives AI assistants (Claude, Gemini, Cursor, …) a real terminal they can operate: open an app, type, press keys, look at the screen, take screenshots, and record everything. That turns "the assistant says it works" into "here's the recording and the screenshot showing it works."
 
-<!-- TODO: replace with a GIF of an agent driving a TUI -->
-[![A recorded ShadowPTY session](https://asciinema.org/a/h4tKuB4nJSyDvGUo.svg)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
+<!-- Rendered from examples/neofetch/recording.cast with agg. TODO: a demo of an agent driving a full-screen TUI -->
+[![An agent running fastfetch in nix-shell through ShadowPTY](assets/demo.gif)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
 
 ---
 
