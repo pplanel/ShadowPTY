@@ -27,11 +27,12 @@ Legend: `[ ]` to do, `[~]` in progress, `[x]` done.
 - [x] Tests: stream and screen (`tests/expect_test.rs`), earliest match and tie-breaking (`output.rs`), invalid combinations (neither, both, empty list).
 - [x] Docs: reference (`patterns`, how the winner is picked).
 
-### 1.3 Wait for text to disappear `[ ]`
-- [ ] `TuiSession::wait_gone(pattern, timeout)` on the screen text, re-checked on each revision.
-- [ ] `tui_wait_gone { pattern, is_regex?, timeout_ms?, session_id? }`.
-- [ ] Succeeds immediately if the text isn't on screen; if the process exits, checks once more.
-- [ ] Tests: spinner that clears, text that never clears (timeout, shows screen).
+### 1.3 Wait for text to disappear `[x]`
+- [x] `TuiSession::wait_gone(patterns, timeout)` on the screen text, re-checked on each revision; returns the elapsed time.
+- [x] `tui_wait_gone { pattern | patterns, is_regex?, timeout_ms?, session_id? }` (shares `pattern`/`patterns` parsing with `tui_expect`).
+- [x] Succeeds immediately if the text isn't on screen; if the process exits, checks once more, then fails.
+- [x] Tests: spinner that clears, already absent, never clears (timeout, shows screen), process exits with text showing, tool.
+- [x] Docs: reference, README; tool description warns to wait for the text to appear first (a test hit that race).
 
 ### 1.4 Glob patterns `[ ]`
 - [ ] `Pattern::glob` (`*`, `?`, `[...]`) compiled to a regex.

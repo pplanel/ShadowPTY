@@ -427,3 +427,147 @@ async fn test_expect_tool_with_several_patterns() {
     }
     manager.stop_app().await.expect("stop");
 }
+
+/// Starts `sh -c script` at the default test size (43×155).
+async fn start_sh_43x155(manager: &PtyManager, script: &str) {
+    let args = vec!["-c".to_string(), script.to_string()];
+    manager
+        .start_app(&PtyConfig::new("sh", &args, 43, 155))
+        .await
+        .expect("start sh");
+}
+
+fn literals(sources: &[&str]) -> Vec<Pattern> {
+    sources
+        .iter()
+        .map(|source| Pattern::literal(source).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn test_wait_gone_returns_when_spinner_clears() {
+    let manager = PtyManager::new();
+    start_sh_43x155(
+        &manager,
+        "printf 'Loading...'; sleep 0.4; printf '\\r\\033[KDone\\n'; sleep 5",
+    )
+    .await;
+    manager
+        .expect(&expectation("Loading", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("spinner shown");
+
+    let elapsed = manager
+        .wait_gone(&literals(&["Loading"]), Duration::from_secs(5))
+        .await
+        .expect("spinner cleared");
+    assert!(elapsed >= Duration::from_millis(100), "{elapsed:?}");
+    let screen = manager.read_screen().await.expect("read");
+    assert!(
+        screen.contains("Done") && !screen.contains("Loading"),
+        "{screen}"
+    );
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_wait_gone_is_immediate_when_text_is_absent() {
+    let manager = PtyManager::new();
+    start_sh_43x155(&manager, "printf 'Ready\\n'; sleep 5").await;
+    manager
+        .expect(&expectation("Ready", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("ready");
+
+    let elapsed = manager
+        .wait_gone(
+            &literals(&["Loading", "Please wait"]),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("nothing to wait for");
+    assert!(elapsed < Duration::from_millis(500), "{elapsed:?}");
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_wait_gone_times_out_and_shows_screen() {
+    let manager = PtyManager::new();
+    start_sh_43x155(&manager, "printf 'Loading forever'; sleep 5").await;
+    manager
+        .expect(&expectation("Loading", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("shown");
+
+    let err = manager
+        .wait_gone(&literals(&["Loading"]), Duration::from_millis(300))
+        .await
+        .expect_err("never clears");
+    let message = format!("{err:#}");
+    assert!(message.contains("'Loading' still on screen"), "{message}");
+    assert!(message.contains("Loading forever"), "{message}");
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_wait_gone_fails_fast_when_process_exits_with_text() {
+    let manager = PtyManager::new();
+    start_sh_43x155(&manager, "printf 'Loading'; sleep 0.2").await;
+    manager
+        .expect(&expectation("Loading", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("shown");
+
+    let started = Instant::now();
+    let err = manager
+        .wait_gone(&literals(&["Loading"]), Duration::from_secs(10))
+        .await
+        .expect_err("can no longer clear");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(format!("{err:#}").contains("exited"), "{err:#}");
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_wait_gone_tool() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiWaitGoneParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    start_sh_43x155(
+        &manager,
+        "printf 'Syncing...'; sleep 0.3; printf '\\r\\033[KSynced\\n'; sleep 5",
+    )
+    .await;
+    manager
+        .expect(&expectation("Syncing", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("shown");
+
+    let gone = server
+        .tui_wait_gone(Parameters(TuiWaitGoneParams {
+            patterns: Some(vec!["Syncing".to_string(), "Loading".to_string()]),
+            timeout_ms: Some(5_000),
+            ..TuiWaitGoneParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!gone.is_error.unwrap_or(false));
+    let text = serde_json::to_string(&gone.content).expect("serialize");
+    assert!(
+        text.contains("2 patterns are no longer on screen"),
+        "{text}"
+    );
+
+    let invalid = server
+        .tui_wait_gone(Parameters(TuiWaitGoneParams::default()))
+        .await
+        .expect("tool call ok");
+    assert!(invalid.is_error.unwrap_or(false));
+    manager.stop_app().await.expect("stop");
+}

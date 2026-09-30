@@ -25,6 +25,7 @@ We rebuild the features rather than depend on the crate. `rust-expect` only read
 | `kill` on drop, process groups | `tui_end` |
 | `expect_eof`, `wait`, `wait_timeout`, `is_running` | `tui_wait_exit`, `exit_status` in `tui_list_sessions` (1.1) |
 | `expect_any` | `tui_expect` with `patterns` (1.2) |
+| `wait_screen_not_contains` | `tui_wait_gone` (1.3) |
 
 ## Principles
 
@@ -44,7 +45,7 @@ The waits testers need most.
 | :--- | :--- | :--- |
 | ✅ Wait for exit, exit status | `expect_eof`, `wait`, `wait_timeout`, `is_running` | New `tui_wait_exit` returns exit code or signal and unread output; `tui_list_sessions` shows `exit_status`; recordings log the real exit code |
 | ✅ First of several patterns | `expect_any` | `tui_expect` gains `patterns` (array); result says which one matched |
-| Wait for text to disappear | `wait_screen_not_contains` | New `tui_wait_gone` (screen), e.g. spinners, "Loading…" |
+| ✅ Wait for text to disappear | `wait_screen_not_contains` | New `tui_wait_gone` (screen), e.g. spinners, "Loading…" |
 | Glob patterns | `Pattern::Glob` | `tui_expect` gains `syntax: "literal" \| "regex" \| "glob"` (`is_regex` kept) |
 | Text around the match | `before` / `after` | `tui_expect` returns `before` and `after` as well as `matched` |
 

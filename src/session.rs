@@ -771,6 +771,29 @@ impl TuiSession {
         }
     }
 
+    /// Waits until none of `patterns` is on the rendered screen (e.g. a spinner or "Loading…")
+    /// and returns how long that took. Returns at once if they're already absent, and fails as
+    /// soon as the process has exited with the text still showing.
+    pub async fn wait_gone(&self, patterns: &[Pattern], timeout: Duration) -> Result<Duration> {
+        anyhow::ensure!(!patterns.is_empty(), "no pattern to wait for");
+        let started = tokio::time::Instant::now();
+        self.output
+            .wait_for(timeout, || {
+                first_match(patterns, self.screen_text().as_bytes())
+                    .is_none()
+                    .then_some(())
+            })
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "{} still on screen: {e}. Current screen:\n{}",
+                    describe_patterns(patterns),
+                    self.screen_text()
+                )
+            })?;
+        Ok(started.elapsed())
+    }
+
     /// Waits until no output has arrived for `quiet_period`, or times out.
     pub async fn wait_stable(&self, quiet_period: Duration, timeout: Duration) -> Result<()> {
         self.output

@@ -20,9 +20,9 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 
 ## Architecture
 
-- `src/server.rs`: rmcp tool definitions (12 tools); thin wrappers over `PtyManager`.
+- `src/server.rs`: rmcp tool definitions (13 tools); thin wrappers over `PtyManager`.
 - `src/pty_manager.rs`: `PtyManager`, the map of sessions keyed by `session_id` (default `"default"`).
-- `src/session.rs`: `TuiSession` owns the `alacritty_terminal::tty::Pty`, one alacritty `Term`, a `SessionOutput`, an optional recorder, **one reader thread** (`run_pty_reader`) and a child-exit watcher (`watch_child_exit`, which also publishes the `ExitStatus`). Input, paste, expect, wait-stable, run-script, resize, snapshot and `terminate` live here.
+- `src/session.rs`: `TuiSession` owns the `alacritty_terminal::tty::Pty`, one alacritty `Term`, a `SessionOutput`, an optional recorder, **one reader thread** (`run_pty_reader`) and a child-exit watcher (`watch_child_exit`, which also publishes the `ExitStatus`). Input, paste, expect, wait-gone, wait-exit, wait-stable, run-script, resize, snapshot and `terminate` live here.
 - `src/output.rs`: raw output buffer (bounded, 1 MiB) with a read position and a `watch` revision counter; `Pattern`, stream expect, wait-stable.
 - `src/screen.rs`: `Screen` snapshot copied from the `Term`; tagged text (`tui_read`) and plain text (screen-mode expect).
 - `src/palette.rs`: base palette, app color overrides (OSC 4/10/11/12), dim/inverse/hidden resolution. Shared by text and screenshots.

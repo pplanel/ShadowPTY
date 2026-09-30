@@ -10,6 +10,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::sync::Mutex;
 
+use crate::output::Pattern;
 use crate::screen::Screen;
 pub use crate::session::{
     DEFAULT_SESSION_ID, ExitStatus, ExpectMatch, ExpectTarget, Expectation, ProcessExit,
@@ -110,6 +111,23 @@ impl PtyManager {
     /// Waits for an expectation in the default session.
     pub async fn expect(&self, expectation: &Expectation) -> Result<ExpectMatch> {
         self.expect_session(DEFAULT_SESSION_ID, expectation).await
+    }
+
+    /// Waits until none of `patterns` is on the session's screen; returns how long it took.
+    pub async fn wait_gone_session(
+        &self,
+        session_id: &str,
+        patterns: &[Pattern],
+        timeout: Duration,
+    ) -> Result<Duration> {
+        let session = self.get_session(session_id).await?;
+        session.wait_gone(patterns, timeout).await
+    }
+
+    /// Waits until none of `patterns` is on the default session's screen.
+    pub async fn wait_gone(&self, patterns: &[Pattern], timeout: Duration) -> Result<Duration> {
+        self.wait_gone_session(DEFAULT_SESSION_ID, patterns, timeout)
+            .await
     }
 
     /// Waits for the session's process to exit and returns its status and unread output.

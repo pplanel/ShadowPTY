@@ -13,7 +13,7 @@ Tool parameters, screen format, recording format and architecture. For an overvi
 
 ## Tools
 
-ShadowPTY exposes 12 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
+ShadowPTY exposes 13 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
 
 | Tool | What it does |
 | :--- | :--- |
@@ -22,6 +22,7 @@ ShadowPTY exposes 12 tools. Every tool except `tui_list_sessions` takes an optio
 | [`tui_paste`](#tui_paste) | Send text as one bracketed paste |
 | [`tui_expect`](#tui_expect) | Wait for a literal or regex in new output or on screen |
 | [`tui_wait_stable`](#tui_wait_stable) | Wait until output goes quiet |
+| [`tui_wait_gone`](#tui_wait_gone) | Wait until text disappears from the screen |
 | [`tui_wait_exit`](#tui_wait_exit) | Wait for the process to exit; get its exit code or signal |
 | [`tui_run_script`](#tui_run_script) | Run shell commands one by one, collecting each output |
 | [`tui_read`](#tui_read) | Read the screen as tagged text |
@@ -95,6 +96,21 @@ Waits until `pattern` appears, or the first of several `patterns`, so the agent 
 ### `tui_wait_stable`
 
 Waits until no output has arrived for `quiet_period_ms` (default `100`), up to `max_wait_ms` (default `3000`). Returns immediately if the process has exited. Use it before `tui_read` or a screenshot.
+
+### `tui_wait_gone`
+
+Waits until text is no longer on the rendered screen, e.g. a spinner, `Loading…` or a modal, and reports how long that took. Takes `pattern` or `patterns` (then waits until none of them shows), `is_regex`, and `timeout_ms` (default `10000`).
+
+```json
+{ "pattern": "Loading", "timeout_ms": 30000 }
+```
+
+```text
+'Loading' is no longer on screen in session 'default' (after 1840 ms)
+```
+
+- Returns at once if the text isn't showing. If it may not have appeared yet, wait for it first with `tui_expect` and `screen_mode`, then call `tui_wait_gone`.
+- Re-checks whenever the screen changes. Fails right away if the process exits with the text still on screen, and on timeout shows the current screen.
 
 ### `tui_wait_exit`
 

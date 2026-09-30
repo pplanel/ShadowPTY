@@ -35,6 +35,35 @@ fn error_result(text: String) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(text)])
 }
 
+/// Patterns given to a tool as `pattern` or `patterns`, with the text the caller wrote.
+struct ToolPatterns {
+    sources: Vec<String>,
+    compiled: Vec<Pattern>,
+}
+
+/// Validates and compiles `pattern` / `patterns` (exactly one must be given). The error is a
+/// message for the tool result.
+fn parse_patterns(
+    pattern: Option<String>,
+    patterns: Option<Vec<String>>,
+    is_regex: Option<bool>,
+) -> Result<ToolPatterns, String> {
+    let sources = match (pattern, patterns) {
+        (Some(pattern), None) => vec![pattern],
+        (None, Some(patterns)) if !patterns.is_empty() => patterns,
+        (Some(_), Some(_)) => return Err("Give either `pattern` or `patterns`, not both".into()),
+        _ => return Err("Give a `pattern` or a non-empty `patterns` list to wait for".into()),
+    };
+    let compiled = sources
+        .iter()
+        .map(|source| {
+            Pattern::new(source, is_regex.unwrap_or(false))
+                .map_err(|e| format!("Invalid pattern '{source}': {e}"))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(ToolPatterns { sources, compiled })
+}
+
 /// Parameters for `tui_start` tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TuiStartParams {
@@ -136,6 +165,23 @@ pub struct TuiReadParams {
 /// Parameters for `tui_end` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TuiEndParams {
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Parameters for `tui_wait_gone` tool.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TuiWaitGoneParams {
+    /// Text or regex that should disappear from the screen (e.g. "Loading"). Give either
+    /// `pattern` or `patterns`.
+    pub pattern: Option<String>,
+    /// Several patterns: waits until none of them is on screen. Give either `pattern` or
+    /// `patterns`.
+    pub patterns: Option<Vec<String>>,
+    /// If true, the patterns are regular expressions (default false: matched literally).
+    pub is_regex: Option<bool>,
+    /// Maximum time to wait in milliseconds (default 10000, at most 120000).
+    pub timeout_ms: Option<u64>,
     /// Target session identifier (defaults to "default").
     pub session_id: Option<String>,
 }
@@ -285,30 +331,13 @@ impl ShadowPtyServer {
         Parameters(params): Parameters<TuiExpectParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
-        let sources = match (params.pattern, params.patterns) {
-            (Some(pattern), None) => vec![pattern],
-            (None, Some(patterns)) if !patterns.is_empty() => patterns,
-            (Some(_), Some(_)) => {
-                return Ok(error_result(
-                    "Give either `pattern` or `patterns`, not both".to_string(),
-                ));
-            }
-            _ => {
-                return Ok(error_result(
-                    "Give a `pattern` or a non-empty `patterns` list to wait for".to_string(),
-                ));
-            }
-        };
-        let is_regex = params.is_regex.unwrap_or(false);
-        let mut patterns = Vec::with_capacity(sources.len());
-        for source in &sources {
-            match Pattern::new(source, is_regex) {
-                Ok(pattern) => patterns.push(pattern),
-                Err(e) => return Ok(error_result(format!("Invalid pattern '{source}': {e}"))),
-            }
-        }
+        let ToolPatterns { sources, compiled } =
+            match parse_patterns(params.pattern, params.patterns, params.is_regex) {
+                Ok(parsed) => parsed,
+                Err(message) => return Ok(error_result(message)),
+            };
         let expectation = Expectation {
-            patterns,
+            patterns: compiled,
             target: if params.screen_mode.unwrap_or(false) {
                 ExpectTarget::Screen
             } else {
@@ -331,6 +360,45 @@ impl ShadowPtyServer {
                     found.matched
                 )),
                 Err(e) => error_result(format!("Expect failed: {e:#}")),
+            },
+        )
+    }
+
+    /// Waits until text disappears from the screen.
+    #[tool(
+        name = "tui_wait_gone",
+        description = "Waits until a literal or regex pattern is no longer on the rendered screen, e.g. a spinner or \"Loading...\" message, and reports how long that took. With `patterns`, waits until none of them is on screen. Returns at once if the text isn't showing, so if it may not have appeared yet, wait for it first with tui_expect (screen_mode). Fails early if the process exits with it still on screen."
+    )]
+    pub async fn tui_wait_gone(
+        &self,
+        Parameters(params): Parameters<TuiWaitGoneParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let ToolPatterns { sources, compiled } =
+            match parse_patterns(params.pattern, params.patterns, params.is_regex) {
+                Ok(parsed) => parsed,
+                Err(message) => return Ok(error_result(message)),
+            };
+        let timeout = wait_duration(params.timeout_ms, 10_000);
+
+        Ok(
+            match self
+                .manager
+                .wait_gone_session(session_id, &compiled, timeout)
+                .await
+            {
+                Ok(elapsed) => {
+                    let what = if sources.len() == 1 {
+                        format!("'{}' is", sources[0])
+                    } else {
+                        format!("{} patterns are", sources.len())
+                    };
+                    text_result(format!(
+                        "{what} no longer on screen in session '{session_id}' (after {} ms)",
+                        elapsed.as_millis()
+                    ))
+                }
+                Err(e) => error_result(format!("Wait gone failed: {e:#}")),
             },
         )
     }
