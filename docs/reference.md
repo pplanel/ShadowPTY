@@ -69,21 +69,27 @@ Sends `text` wrapped in bracketed-paste markers (DECSET 2004), so shells and edi
 
 ### `tui_expect`
 
-Waits until `pattern` appears, so the agent doesn't need sleep-and-poll loops.
+Waits until `pattern` appears, or the first of several `patterns`, so the agent doesn't need sleep-and-poll loops.
 
 | Parameter | Type | Default | |
 | :--- | :--- | :--- | :--- |
-| `pattern` | string | required | Text or regex |
-| `is_regex` | boolean | `false` | |
+| `pattern` | string | – | Text or regex. Give `pattern` or `patterns` |
+| `patterns` | string[] | – | Several; waits for whichever appears first |
+| `is_regex` | boolean | `false` | Applies to every pattern |
 | `screen_mode` | boolean | `false` | Match the rendered screen instead of new output |
 | `timeout_ms` | integer | `10000` | |
 
 - **Stream mode** (default) searches output the agent hasn't seen yet — neither returned by `tui_read` nor matched by an earlier `tui_expect` — so it never matches stale text. A match consumes output up to its end.
 - **Screen mode** matches what is actually drawn, including text built from cursor moves and overwrites.
+- With `patterns`, the match that starts earliest wins (if two start at the same place, the one listed first). Only output up to that match is consumed. The reply names the winner, numbered from 1, e.g. `Matched pattern 2 of 3 ('Permission denied'): "Permission denied"`.
 - If the process exits first, it fails right away and returns the last output.
 
 ```json
 { "pattern": "Build (succeeded|failed)", "is_regex": true, "timeout_ms": 60000 }
+```
+
+```json
+{ "patterns": ["Password:", "Permission denied", "$ "], "timeout_ms": 5000 }
 ```
 
 ### `tui_wait_stable`

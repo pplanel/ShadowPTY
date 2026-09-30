@@ -12,8 +12,8 @@ use tokio::sync::Mutex;
 
 use crate::screen::Screen;
 pub use crate::session::{
-    DEFAULT_SESSION_ID, ExitStatus, ExpectTarget, Expectation, ProcessExit, ProcessInfo, PtyConfig,
-    Script, ScriptOutcome, ScriptStep, SessionSummary, TuiSession,
+    DEFAULT_SESSION_ID, ExitStatus, ExpectMatch, ExpectTarget, Expectation, ProcessExit,
+    ProcessInfo, PtyConfig, Script, ScriptOutcome, ScriptStep, SessionSummary, TuiSession,
 };
 
 fn no_session(session_id: &str) -> String {
@@ -102,13 +102,13 @@ impl PtyManager {
         &self,
         session_id: &str,
         expectation: &Expectation,
-    ) -> Result<String> {
+    ) -> Result<ExpectMatch> {
         let session = self.get_session(session_id).await?;
         session.expect(expectation).await
     }
 
     /// Waits for an expectation in the default session.
-    pub async fn expect(&self, expectation: &Expectation) -> Result<String> {
+    pub async fn expect(&self, expectation: &Expectation) -> Result<ExpectMatch> {
         self.expect_session(DEFAULT_SESSION_ID, expectation).await
     }
 

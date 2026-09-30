@@ -83,11 +83,14 @@ pub struct TuiPasteParams {
 }
 
 /// Parameters for `tui_expect` tool.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TuiExpectParams {
-    /// Substring or regex pattern to wait for.
-    pub pattern: String,
-    /// If true, `pattern` is a regular expression (default false: matched literally).
+    /// Substring or regex pattern to wait for. Give either `pattern` or `patterns`.
+    pub pattern: Option<String>,
+    /// Several patterns: waits for whichever appears first and reports which one it was
+    /// (e.g. `["Password:", "Permission denied", "$ "]`). Give either `pattern` or `patterns`.
+    pub patterns: Option<Vec<String>>,
+    /// If true, the patterns are regular expressions (default false: matched literally).
     pub is_regex: Option<bool>,
     /// If true, match against the rendered screen text instead of new output (default false).
     pub screen_mode: Option<bool>,
@@ -275,24 +278,37 @@ impl ShadowPtyServer {
     /// Waits for a literal or regex pattern in new output or on screen.
     #[tool(
         name = "tui_expect",
-        description = "Waits until a literal or regex pattern appears, instead of sleeping and polling tui_read. By default it searches output that neither tui_read nor an earlier tui_expect has returned yet; with screen_mode it searches the rendered screen text. Fails early if the process exits."
+        description = "Waits until a literal or regex pattern appears, instead of sleeping and polling tui_read. With `patterns`, waits for whichever appears first and says which one matched. By default it searches output that neither tui_read nor an earlier tui_expect has returned yet; with screen_mode it searches the rendered screen text. Fails early if the process exits."
     )]
     pub async fn tui_expect(
         &self,
         Parameters(params): Parameters<TuiExpectParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
-        let pattern = match Pattern::new(&params.pattern, params.is_regex.unwrap_or(false)) {
-            Ok(pattern) => pattern,
-            Err(e) => {
-                return Ok(error_result(format!(
-                    "Invalid pattern '{}': {e}",
-                    params.pattern
-                )));
+        let sources = match (params.pattern, params.patterns) {
+            (Some(pattern), None) => vec![pattern],
+            (None, Some(patterns)) if !patterns.is_empty() => patterns,
+            (Some(_), Some(_)) => {
+                return Ok(error_result(
+                    "Give either `pattern` or `patterns`, not both".to_string(),
+                ));
+            }
+            _ => {
+                return Ok(error_result(
+                    "Give a `pattern` or a non-empty `patterns` list to wait for".to_string(),
+                ));
             }
         };
+        let is_regex = params.is_regex.unwrap_or(false);
+        let mut patterns = Vec::with_capacity(sources.len());
+        for source in &sources {
+            match Pattern::new(source, is_regex) {
+                Ok(pattern) => patterns.push(pattern),
+                Err(e) => return Ok(error_result(format!("Invalid pattern '{source}': {e}"))),
+            }
+        }
         let expectation = Expectation {
-            pattern,
+            patterns,
             target: if params.screen_mode.unwrap_or(false) {
                 ExpectTarget::Screen
             } else {
@@ -303,9 +319,17 @@ impl ShadowPtyServer {
 
         Ok(
             match self.manager.expect_session(session_id, &expectation).await {
-                Ok(matched) => {
-                    text_result(format!("Matched {matched:?} in session '{session_id}'"))
-                }
+                Ok(found) if sources.len() == 1 => text_result(format!(
+                    "Matched {:?} in session '{session_id}'",
+                    found.matched
+                )),
+                Ok(found) => text_result(format!(
+                    "Matched pattern {} of {} ('{}'): {:?} in session '{session_id}'",
+                    found.index + 1,
+                    sources.len(),
+                    sources[found.index],
+                    found.matched
+                )),
                 Err(e) => error_result(format!("Expect failed: {e:#}")),
             },
         )

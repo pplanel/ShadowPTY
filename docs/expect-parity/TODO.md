@@ -19,12 +19,13 @@ Legend: `[ ]` to do, `[~]` in progress, `[x]` done.
 - [x] Tests (`tests/exit_test.rs`): exit code, killed by signal, timeout while running, recording ends with the real code, recording after `tui_end`, tools.
 - [x] Docs: reference (new tool, list output), README capabilities; tick the recording item in the root `TODO.md`.
 
-### 1.2 First of several patterns `[ ]`
-- [ ] `SessionOutput::expect_any(&[Pattern])`: earliest match in unread output wins; ties go to the first pattern.
-- [ ] Screen mode: earliest match in screen text.
-- [ ] `tui_expect` accepts `patterns` (array) as an alternative to `pattern`; exactly one must be given.
-- [ ] Result names the pattern index and text that matched.
-- [ ] Tests: stream and screen, tie-breaking, invalid combinations.
+### 1.2 First of several patterns `[x]`
+- [x] `SessionOutput::expect_any(&[Pattern])`: earliest match in unread output wins; ties go to the first pattern.
+- [x] Screen mode: earliest match in screen text.
+- [x] `tui_expect` accepts `patterns` (array) as an alternative to `pattern`; exactly one must be given.
+- [x] Result names the pattern index and text that matched.
+- [x] Tests: stream and screen (`tests/expect_test.rs`), earliest match and tie-breaking (`output.rs`), invalid combinations (neither, both, empty list).
+- [x] Docs: reference (`patterns`, how the winner is picked).
 
 ### 1.3 Wait for text to disappear `[ ]`
 - [ ] `TuiSession::wait_gone(pattern, timeout)` on the screen text, re-checked on each revision.

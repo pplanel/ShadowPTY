@@ -8,6 +8,7 @@
 //! match, and `tui_read` moves it to the end, so an expect never matches output the agent has
 //! already seen.
 
+use std::ops::Range;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -76,9 +77,35 @@ impl Pattern {
     }
 }
 
+/// Finds the pattern whose first match starts earliest in `haystack`; on a tie, the one listed
+/// first. Returns its index and the byte range of the match.
+#[must_use]
+pub fn first_match(patterns: &[Pattern], haystack: &[u8]) -> Option<(usize, Range<usize>)> {
+    patterns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pattern)| pattern.regex.find(haystack).map(|m| (index, m.range())))
+        .min_by_key(|(index, range)| (range.start, *index))
+}
+
+/// Describes patterns for messages: `'a'`, or `any of 'a', 'b'`.
+#[must_use]
+pub fn describe_patterns(patterns: &[Pattern]) -> String {
+    let quoted: Vec<String> = patterns
+        .iter()
+        .map(|pattern| format!("'{}'", pattern.source()))
+        .collect();
+    match quoted.as_slice() {
+        [single] => single.clone(),
+        _ => format!("any of {}", quoted.join(", ")),
+    }
+}
+
 /// A stream match: the matched text and the unread output before it, both as plain text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamMatch {
+    /// Which of the patterns matched (always 0 for a single pattern).
+    pub index: usize,
     pub matched: String,
     pub before: String,
 }
@@ -217,15 +244,27 @@ impl SessionOutput {
         pattern: &Pattern,
         timeout: Duration,
     ) -> Result<StreamMatch, WaitError> {
+        self.expect_any(std::slice::from_ref(pattern), timeout)
+            .await
+    }
+
+    /// Waits for whichever of `patterns` matches earliest in the unread output (on a tie, the
+    /// one listed first) and consumes up to the end of that match.
+    pub async fn expect_any(
+        &self,
+        patterns: &[Pattern],
+        timeout: Duration,
+    ) -> Result<StreamMatch, WaitError> {
         self.wait_for(timeout, || {
             let mut state = self.state();
             let unread = state.unread();
-            let found = pattern.regex.find(unread)?;
+            let (index, range) = first_match(patterns, unread)?;
             let result = StreamMatch {
-                matched: plain_text(&unread[found.range()]),
-                before: plain_text(&unread[..found.start()]),
+                index,
+                matched: plain_text(&unread[range.clone()]),
+                before: plain_text(&unread[..range.start]),
             };
-            state.read_pos += found.end();
+            state.read_pos += range.end;
             drop(state);
             Some(result)
         })
@@ -320,6 +359,50 @@ mod tests {
                 .expect(&literal("PROMPT"), Duration::from_millis(10))
                 .await,
             Err(WaitError::Timeout(Duration::from_millis(10)))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_expect_any_takes_earliest_match() {
+        let output = SessionOutput::new();
+        output.push(b"login: Permission denied\nPassword: ");
+        let patterns = [literal("Password:"), literal("Permission denied")];
+
+        let found = output
+            .expect_any(&patterns, Duration::from_millis(10))
+            .await
+            .unwrap();
+        assert_eq!(found.index, 1);
+        assert_eq!(found.matched, "Permission denied");
+        assert_eq!(found.before, "login: ");
+
+        // Only output up to the winning match was consumed
+        let next = output
+            .expect_any(&patterns, Duration::from_millis(10))
+            .await
+            .unwrap();
+        assert_eq!(next.index, 0);
+    }
+
+    #[tokio::test]
+    async fn test_expect_any_tie_goes_to_first_listed() {
+        let output = SessionOutput::new();
+        output.push(b"ERROR: disk full");
+        let patterns = [Pattern::regex("ERR[A-Z]*").unwrap(), literal("ERROR: disk")];
+        let found = output
+            .expect_any(&patterns, Duration::from_millis(10))
+            .await
+            .unwrap();
+        assert_eq!(found.index, 0);
+        assert_eq!(found.matched, "ERROR");
+    }
+
+    #[test]
+    fn test_describe_patterns() {
+        assert_eq!(describe_patterns(&[literal("a")]), "'a'");
+        assert_eq!(
+            describe_patterns(&[literal("a"), literal("b")]),
+            "any of 'a', 'b'"
         );
     }
 

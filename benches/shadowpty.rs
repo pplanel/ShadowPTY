@@ -196,7 +196,7 @@ fn bench_pty(c: &mut Criterion) {
                 .unwrap();
             manager
                 .expect(&Expectation {
-                    pattern: Pattern::literal(&marker).unwrap(),
+                    patterns: vec![Pattern::literal(&marker).unwrap()],
                     target: ExpectTarget::Stream,
                     timeout: Duration::from_secs(5),
                 })

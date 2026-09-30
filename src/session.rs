@@ -22,7 +22,7 @@ use rustix_openpty::rustix::termios::Winsize;
 use tokio::sync::watch;
 
 use crate::input::parse_input_keys;
-use crate::output::{Pattern, SessionOutput};
+use crate::output::{Pattern, SessionOutput, describe_patterns, first_match};
 use crate::recorder::{AsciicastRecorder, SharedRecorder};
 use crate::screen::Screen;
 
@@ -150,12 +150,32 @@ pub enum ExpectTarget {
     Screen,
 }
 
-/// What to wait for, where, and for how long.
+/// What to wait for, where, and for how long. With several patterns, the first to match wins.
 #[derive(Debug, Clone)]
 pub struct Expectation {
-    pub pattern: Pattern,
+    pub patterns: Vec<Pattern>,
     pub target: ExpectTarget,
     pub timeout: Duration,
+}
+
+impl Expectation {
+    /// Waits for a single pattern.
+    #[must_use]
+    pub fn new(pattern: Pattern, target: ExpectTarget, timeout: Duration) -> Self {
+        Self {
+            patterns: vec![pattern],
+            target,
+            timeout,
+        }
+    }
+}
+
+/// Which pattern an expectation matched, and the matched text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectMatch {
+    /// Index into `Expectation::patterns`.
+    pub index: usize,
+    pub matched: String,
 }
 
 /// Shell commands for `run_script`, and the prompt that follows each.
@@ -700,41 +720,51 @@ impl TuiSession {
         Ok(screen)
     }
 
-    /// Waits for pattern match either on rendered screen text or in raw output stream.
-    pub async fn expect(&self, expectation: &Expectation) -> Result<String> {
+    /// Plain text of the current screen.
+    fn screen_text(&self) -> String {
+        let screen = {
+            let term = lock_mutex(&self.terminal);
+            Screen::capture(&term)
+        };
+        screen.to_plain_text()
+    }
+
+    /// Waits until one of the expectation's patterns matches, on the rendered screen or in the
+    /// unread output. With several patterns, the earliest match wins (ties: the first listed).
+    pub async fn expect(&self, expectation: &Expectation) -> Result<ExpectMatch> {
         let Expectation {
-            pattern,
+            patterns,
             target,
             timeout,
         } = expectation;
+        anyhow::ensure!(!patterns.is_empty(), "no pattern to wait for");
+        let described = describe_patterns(patterns);
 
         match target {
             ExpectTarget::Screen => self
                 .output
                 .wait_for(*timeout, || {
-                    let screen = {
-                        let term = lock_mutex(&self.terminal);
-                        Screen::capture(&term)
-                    };
-                    pattern.find_in(&screen.to_plain_text())
+                    let text = self.screen_text();
+                    let (index, range) = first_match(patterns, text.as_bytes())?;
+                    Some(ExpectMatch {
+                        index,
+                        matched: String::from_utf8_lossy(&text.as_bytes()[range]).into_owned(),
+                    })
                 })
                 .await
                 .map_err(|e| {
-                    let screen = {
-                        let term = lock_mutex(&self.terminal);
-                        Screen::capture(&term)
-                    };
-                    let text = screen.to_plain_text();
                     anyhow::anyhow!(
-                        "pattern '{}' not found on screen: {e}. Current screen:\n{text}",
-                        pattern.source()
+                        "{described} not found on screen: {e}. Current screen:\n{}",
+                        self.screen_text()
                     )
                 }),
-            ExpectTarget::Stream => match self.output.expect(pattern, *timeout).await {
-                Ok(found) => Ok(found.matched),
+            ExpectTarget::Stream => match self.output.expect_any(patterns, *timeout).await {
+                Ok(found) => Ok(ExpectMatch {
+                    index: found.index,
+                    matched: found.matched,
+                }),
                 Err(e) => Err(anyhow::anyhow!(
-                    "pattern '{}' not found in output: {e}. Unread output (last {ERROR_TAIL_CHARS} chars):\n{}",
-                    pattern.source(),
+                    "{described} not found in output: {e}. Unread output (last {ERROR_TAIL_CHARS} chars):\n{}",
                     self.output.unread_tail(ERROR_TAIL_CHARS)
                 )),
             },
@@ -921,12 +951,13 @@ mod tests {
         let session = TuiSession::spawn("test_direct", &config).expect("spawn");
 
         let exp = Expectation {
-            pattern: Pattern::literal("DIRECT_SESSION_OK").expect("pat"),
+            patterns: vec![Pattern::literal("DIRECT_SESSION_OK").expect("pat")],
             target: ExpectTarget::Stream,
             timeout: Duration::from_secs(5),
         };
         let matched = session.expect(&exp).await.expect("expect");
-        assert_eq!(matched, "DIRECT_SESSION_OK");
+        assert_eq!(matched.matched, "DIRECT_SESSION_OK");
+        assert_eq!(matched.index, 0);
 
         let snap = session.snapshot().expect("snapshot");
         assert_eq!(snap.rows, 24);
@@ -948,7 +979,7 @@ mod tests {
         session.send_paste("echo 'PASTED_OK'\n").expect("paste");
 
         let exp = Expectation {
-            pattern: Pattern::literal("PASTED_OK").expect("pat"),
+            patterns: vec![Pattern::literal("PASTED_OK").expect("pat")],
             target: ExpectTarget::Screen,
             timeout: Duration::from_secs(5),
         };

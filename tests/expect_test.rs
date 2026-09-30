@@ -9,7 +9,7 @@ use shadowpty::pty_manager::{ExpectTarget, Expectation, PtyConfig, PtyManager, S
 
 fn expectation(pattern: &str, target: ExpectTarget, timeout_ms: u64) -> Expectation {
     Expectation {
-        pattern: Pattern::literal(pattern).unwrap(),
+        patterns: vec![Pattern::literal(pattern).unwrap()],
         target,
         timeout: Duration::from_millis(timeout_ms),
     }
@@ -43,13 +43,13 @@ async fn test_expect_regex_matching() {
 
     let matched = manager
         .expect(&Expectation {
-            pattern: Pattern::regex(r"STATUS_CODE_\d{3}_OK").unwrap(),
+            patterns: vec![Pattern::regex(r"STATUS_CODE_\d{3}_OK").unwrap()],
             target: ExpectTarget::Stream,
             timeout: Duration::from_secs(3),
         })
         .await
         .expect("regex match");
-    assert_eq!(matched, "STATUS_CODE_200_OK");
+    assert_eq!(matched.matched, "STATUS_CODE_200_OK");
     manager.stop_app().await.expect("stop");
 }
 
@@ -155,7 +155,7 @@ async fn test_pending_expect_does_not_block_other_calls() {
 
     manager.send_input("RELEASE<ENTER>").await.expect("release");
     let matched = pending.await.expect("join").expect("pending expect");
-    assert_eq!(matched, "RELEASE");
+    assert_eq!(matched.matched, "RELEASE");
     manager.stop_app().await.expect("stop");
 }
 
@@ -270,7 +270,8 @@ async fn test_expect_and_script_tools() {
 
     let invalid = server
         .tui_expect(Parameters(TuiExpectParams {
-            pattern: "([".to_string(),
+            pattern: Some("([".to_string()),
+            patterns: None,
             is_regex: Some(true),
             screen_mode: None,
             timeout_ms: Some(100),
@@ -316,5 +317,113 @@ async fn test_unterminated_sync_frame_is_flushed() {
         .await
         .expect("frame flushed to the screen");
     assert!(started.elapsed() < Duration::from_secs(1));
+    manager.stop_app().await.expect("stop");
+}
+
+fn patterns(sources: &[&str], target: ExpectTarget, timeout_ms: u64) -> Expectation {
+    Expectation {
+        patterns: sources
+            .iter()
+            .map(|source| Pattern::literal(source).unwrap())
+            .collect(),
+        target,
+        timeout: Duration::from_millis(timeout_ms),
+    }
+}
+
+#[tokio::test]
+async fn test_expect_first_of_several_patterns_in_stream() {
+    let manager = PtyManager::new();
+    start_sh(
+        &manager,
+        "sleep 0.2; printf 'Connecting...\\nPermission denied\\n'; sleep 5",
+    )
+    .await;
+
+    let found = manager
+        .expect(&patterns(
+            &["Password:", "Permission denied", "Welcome"],
+            ExpectTarget::Stream,
+            5_000,
+        ))
+        .await
+        .expect("one of the patterns");
+    assert_eq!(found.index, 1);
+    assert_eq!(found.matched, "Permission denied");
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_expect_first_of_several_patterns_on_screen() {
+    let manager = PtyManager::new();
+    start_sh(
+        &manager,
+        "printf 'Status: \\033[32mREADY\\033[0m\\n'; sleep 5",
+    )
+    .await;
+
+    let found = manager
+        .expect(&patterns(&["FAILED", "READY"], ExpectTarget::Screen, 5_000))
+        .await
+        .expect("one of the patterns");
+    assert_eq!(found.index, 1);
+    assert_eq!(found.matched, "READY");
+
+    let err = manager
+        .expect(&patterns(&["FAILED", "CRASHED"], ExpectTarget::Screen, 200))
+        .await
+        .expect_err("neither is on screen");
+    assert!(
+        format!("{err:#}").contains("any of 'FAILED', 'CRASHED'"),
+        "{err:#}"
+    );
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_expect_tool_with_several_patterns() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiExpectParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    start_sh(&manager, "printf 'Build failed: 2 errors\\n'; sleep 5").await;
+
+    let matched = server
+        .tui_expect(Parameters(TuiExpectParams {
+            patterns: Some(vec![
+                "Build succeeded".to_string(),
+                "Build failed".to_string(),
+            ]),
+            timeout_ms: Some(5_000),
+            ..TuiExpectParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!matched.is_error.unwrap_or(false));
+    let text = serde_json::to_string(&matched.content).expect("serialize");
+    assert!(
+        text.contains("Matched pattern 2 of 2 ('Build failed')"),
+        "{text}"
+    );
+
+    for invalid in [
+        TuiExpectParams::default(),
+        TuiExpectParams {
+            patterns: Some(Vec::new()),
+            ..TuiExpectParams::default()
+        },
+        TuiExpectParams {
+            pattern: Some("a".to_string()),
+            patterns: Some(vec!["b".to_string()]),
+            ..TuiExpectParams::default()
+        },
+    ] {
+        let result = server
+            .tui_expect(Parameters(invalid))
+            .await
+            .expect("tool call ok");
+        assert!(result.is_error.unwrap_or(false));
+    }
     manager.stop_app().await.expect("stop");
 }
