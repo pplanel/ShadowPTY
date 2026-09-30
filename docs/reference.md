@@ -6,6 +6,7 @@ Tool parameters, screen format, recording format and architecture. For an overvi
 - [Pattern syntax](#pattern-syntax)
 - [Reading the screen](#reading-the-screen)
 - [Recording](#recording)
+- [Session report](#session-report)
 - [Architecture](#architecture)
 - [Development](#development)
 - [Limitations](#limitations)
@@ -44,11 +45,14 @@ Spawns `command` in a new pseudo-terminal. Starting a `session_id` that is alrea
 | `args` | string[] | `[]` | Arguments |
 | `rows`, `cols` | integer | `24`, `80` | Terminal size |
 | `record_path` | string | – | Record the session to this `.cast` file |
+| `report_path` | string | – | Write a JSON Lines [session report](#session-report) of every check to this file |
 | `session_id` | string | `"default"` | |
 
 ```json
-{ "command": "htop", "rows": 43, "cols": 155, "record_path": "/tmp/htop.cast", "session_id": "htop" }
+{ "command": "htop", "rows": 43, "cols": 155, "record_path": "/tmp/htop.cast", "report_path": "/tmp/htop.jsonl", "session_id": "htop" }
 ```
+
+The reply names the files, e.g. `…, recording to '/tmp/htop.cast', reporting to '/tmp/htop.jsonl')`. A report file that can't be created fails the call before anything is started.
 
 ### `tui_input`
 
@@ -175,7 +179,11 @@ Resizes the PTY and the screen (`rows`, `cols`), to test how an app re-lays out.
 
 ### `tui_end`
 
-Stops a session: kills its whole process group (so background children don't leak), reaps the process and closes its recording.
+Stops a session: kills its whole process group (so background children don't leak), reaps the process and closes its recording and report. If the session writes a [report](#session-report), its `exit` and `summary` lines are written before the call returns, and the reply adds the totals:
+
+```text
+Terminated session 'default' for command 'sh' (pid: 4242). Report '/tmp/app.jsonl': 5 checks, 4 passed, 1 failed
+```
 
 ---
 
@@ -248,6 +256,52 @@ agg session.cast session.gif         # GIF via agg
 
 ---
 
+## Session report
+
+A recording shows what happened on screen; the report shows what was **checked**. Pass `report_path` to `tui_start` and the session writes [JSON Lines](https://jsonlines.org) to that file: one JSON object per line, for inputs, every expectation and wait with its result and timing, screenshots, the exit status and a final summary. Attach it to a CI run or a bug report next to the recording.
+
+```json
+{"at_ms":0,"type":"start","session_id":"default","command":"sh","args":["-c","./app"],"rows":43,"cols":155,"pid":4242,"record_path":"/tmp/app.cast","timestamp":1790000000,"version":1}
+{"at_ms":350,"type":"expect","target":"screen","syntax":"literal","patterns":["Ready"],"timeout_ms":10000,"passed":true,"elapsed_ms":310,"pattern_index":0,"matched":"Ready","row":2,"error":null}
+{"at_ms":352,"type":"input","keys":"q","bytes":1}
+{"at_ms":5360,"type":"expect","target":"stream","syntax":"literal","patterns":["Quit? (y/n)"],"timeout_ms":5000,"passed":false,"elapsed_ms":5004,"pattern_index":null,"matched":null,"row":null,"error":"'Quit? (y/n)' not found in output: timed out after 5s. Unread output (last 500 chars):\n…"}
+{"at_ms":5400,"type":"screenshot","format":"png","path":"/tmp/app.png","bytes":48213}
+{"at_ms":5530,"type":"exit","exit_status":{"signal":9}}
+{"at_ms":5531,"type":"summary","checks":2,"passed":1,"failed":1,"exit_status":{"signal":9},"duration_ms":5531}
+```
+
+Every line has `type` and `at_ms`: milliseconds since the session started, when the line was written. A check's line is written when it finishes, so it started at `at_ms - elapsed_ms`. Fields that don't apply are `null`. Durations are in milliseconds.
+
+| `type` | Written when | Fields |
+| :--- | :--- | :--- |
+| `start` | The session starts (always the first line) | `session_id`, `command`, `args`, `rows`, `cols`, `pid`, `record_path` (`null` without a recording), `timestamp` (Unix seconds), `version` (`1`) |
+| `input` | `tui_input` | `keys` as given (e.g. `"ls<ENTER>"`), `bytes` sent |
+| `paste` | `tui_paste` | `text`, `bytes` |
+| `resize` | `tui_resize` | `rows`, `cols` |
+| `expect` | `tui_expect` ends | `target` (`"stream"` / `"screen"`), `syntax` (`"literal"` / `"regex"` / `"glob"`), `patterns` (as written), `timeout_ms`, `passed`, `elapsed_ms`; on success `pattern_index` (from 0) and `matched`, plus `row` (from 1, screen mode, as in the reply); on failure `error` |
+| `wait_gone` | `tui_wait_gone` ends | `syntax`, `patterns`, `timeout_ms`, `passed`, `elapsed_ms`, `error` |
+| `wait_stable` | `tui_wait_stable` ends | `quiet_period_ms`, `timeout_ms`, `passed`, `elapsed_ms`, `error` |
+| `wait_exit` | `tui_wait_exit` ends | `timeout_ms`, `passed`, `elapsed_ms`, `exit_status`, `error` |
+| `run_script` | `tui_run_script` ends | `commands`, `prompt`, `syntax`, `timeout_ms` (per command), `passed`, `elapsed_ms`, `completed` (commands that finished), `error` |
+| `screenshot` | `tui_take_screenshot` succeeds | `format` (`"png"` / `"svg"`), `path` (`null` when returned inline), `bytes` |
+| `exit` | The process exits, after its last output | `exit_status`: `{"exit_code": N}`, `{"signal": N}` or `"unknown"`, as in `tui_list_sessions` |
+| `summary` | The session ends (always the last line) | `checks`, `passed`, `failed`, `exit_status` (`null` if it was never reported), `duration_ms` |
+
+- **Checks** are the lines with a boolean `passed`: `expect`, `wait_gone`, `wait_stable`, `wait_exit` and `run_script`. `error` is the same message the tool reply gives. `wait_exit` passes when the process exits, whatever its exit code (the code is in `exit` and `summary`); `run_script` fails if any command's prompt didn't appear. Calls rejected before they start waiting (e.g. an invalid regex) aren't logged.
+- **`exit`** is written once, as soon as the process is gone, so it can come before later checks such as `tui_wait_exit`.
+- **`summary`** is written once, when the session ends: `tui_end`, a `tui_start` that replaces the same `session_id`, or the server shutting down cleanly with the session still open. It isn't written when the process exits, since the agent can still check things afterwards. If the session is ended while its process runs, the `exit` line records the kill (`{"signal": 9}`) just before the summary.
+- **Crash-safe:** each line is flushed as soon as it's written, so if the server dies the file still holds every line so far, each valid on its own; only the `summary` is missing.
+- **Watch it live** while the agent works:
+
+```bash
+tail -f /tmp/app.jsonl
+tail -f /tmp/app.jsonl | jq -c 'select(.passed == false)'   # failed checks only
+```
+
+The same events are available in process to anything embedding ShadowPTY, with or without a report file: `PtyManager::subscribe_report_session` returns a `tokio::sync::broadcast` receiver of `ReportEvent`s.
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -288,6 +342,7 @@ Design notes: [`RFC-single-emulator-core.md`](proposals/RFC-single-emulator-core
 | `src/screenshot.rs`, `src/rasterizer.rs` | SVG and PNG rendering |
 | `src/input.rs` | Key tokens → bytes |
 | `src/recorder.rs` | asciicast v3 writer |
+| `src/report.rs` | Session report: events, JSON Lines writer, check totals |
 
 ---
 

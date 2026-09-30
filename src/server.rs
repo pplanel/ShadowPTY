@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::output::{Pattern, Syntax};
 use crate::pty_manager::{
-    DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, Script,
+    DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, ScreenshotTaken, Script,
 };
 
 /// Upper limit for any wait, so a single call can't hang the agent indefinitely.
@@ -154,6 +154,10 @@ pub struct TuiStartParams {
     pub cols: Option<u16>,
     /// Optional filesystem path where session will be recorded in asciicast v3 format.
     pub record_path: Option<String>,
+    /// Optional filesystem path for a JSON Lines report of the session: inputs, every check
+    /// (expect, waits, scripts) with pass/fail and timing, screenshots, the exit status, and a
+    /// summary written when the session ends.
+    pub report_path: Option<String>,
     /// Identifier for this session (defaults to "default"). Starting an existing id replaces that session.
     pub session_id: Option<String>,
 }
@@ -311,6 +315,15 @@ impl ShadowPtyServer {
     pub const fn new(manager: PtyManager) -> Self {
         Self { manager }
     }
+
+    /// Adds a screenshot that was rendered (and saved, if it has a path) to the session report.
+    async fn report_screenshot(&self, session_id: &str, shot: ScreenshotTaken<'_>) {
+        // The screenshot is taken either way; a session that ended meanwhile just can't log it
+        let _ = self
+            .manager
+            .record_screenshot_session(session_id, &shot)
+            .await;
+    }
 }
 
 #[tool_router(server_handler)]
@@ -318,7 +331,7 @@ impl ShadowPtyServer {
     /// Spawns a new process in a native pseudo-terminal (PTY) and initializes the screen buffer.
     #[tool(
         name = "tui_start",
-        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file. Use session_id to run several sessions at once."
+        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once."
     )]
     pub async fn tui_start(
         &self,
@@ -328,7 +341,8 @@ impl ShadowPtyServer {
         let cols = params.cols.unwrap_or(80);
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
         let config = crate::pty_manager::PtyConfig::new(&params.command, &params.args, rows, cols)
-            .with_record_path(params.record_path.as_deref());
+            .with_record_path(params.record_path.as_deref())
+            .with_report_path(params.report_path.as_deref());
 
         match self.manager.start_session(session_id, &config).await {
             Ok(info) => {
@@ -342,8 +356,12 @@ impl ShadowPtyServer {
                     .record_path
                     .as_ref()
                     .map_or_else(String::new, |path| format!(", recording to '{path}'"));
+                let reporting_str = params
+                    .report_path
+                    .as_ref()
+                    .map_or_else(String::new, |path| format!(", reporting to '{path}'"));
                 let msg = format!(
-                    "Started command '{cmd}' in PTY session '{session_id}' (pid: {pid_str}, rows: {rows}, cols: {cols}{recording_str})"
+                    "Started command '{cmd}' in PTY session '{session_id}' (pid: {pid_str}, rows: {rows}, cols: {cols}{recording_str}{reporting_str})"
                 );
                 Ok(CallToolResult::success(vec![
                     rmcp::model::ContentBlock::text(msg),
@@ -672,7 +690,7 @@ impl ShadowPtyServer {
     /// Terminates a pseudo-terminal session, killing the child process and releasing resources.
     #[tool(
         name = "tui_end",
-        description = "Terminates a pseudo-terminal session, killing the running program and releasing resources."
+        description = "Terminates a pseudo-terminal session, killing the running program and releasing resources. If the session writes a report, finishes it and says how many checks passed and failed."
     )]
     pub async fn tui_end(
         &self,
@@ -680,14 +698,18 @@ impl ShadowPtyServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
         match self.manager.stop_session(session_id).await {
-            Ok(info) => {
-                let pid_str = info
+            Ok(stopped) => {
+                let pid_str = stopped
+                    .info
                     .pid
                     .map_or_else(|| "unknown".to_string(), |p| p.to_string());
-                let cmd = &info.command;
-                let msg = format!(
+                let cmd = &stopped.info.command;
+                let mut msg = format!(
                     "Terminated session '{session_id}' for command '{cmd}' (pid: {pid_str})"
                 );
+                if let Some(path) = &stopped.report_path {
+                    let _ = write!(msg, ". Report '{path}': {}", stopped.totals);
+                }
                 Ok(CallToolResult::success(vec![
                     rmcp::model::ContentBlock::text(msg),
                 ]))
@@ -758,9 +780,15 @@ impl ShadowPtyServer {
                 }
             };
 
+            let shot = ScreenshotTaken {
+                format,
+                path: params.output_path.as_deref(),
+                bytes: png_bytes.len(),
+            };
             if let Some(ref path_str) = params.output_path {
                 match tokio::fs::write(path_str, &png_bytes).await {
                     Ok(()) => {
+                        self.report_screenshot(session_id, shot).await;
                         let scale_usize = usize::from(options.scale.clamp(1, 4));
                         let pixel_w = usize::from(snapshot.cols) * (9 * scale_usize);
                         let pixel_h = usize::from(snapshot.rows) * (18 * scale_usize);
@@ -776,16 +804,23 @@ impl ShadowPtyServer {
                     ))),
                 }
             } else {
+                self.report_screenshot(session_id, shot).await;
                 let b64 = crate::rasterizer::png_to_base64(&png_bytes);
                 Ok(image_result(b64, "image/png"))
             }
         } else {
             let theme = crate::screenshot::Theme::default();
             let svg = crate::screenshot::render_svg(&snapshot, &theme);
+            let shot = ScreenshotTaken {
+                format,
+                path: params.output_path.as_deref(),
+                bytes: svg.len(),
+            };
 
             if let Some(ref path_str) = params.output_path {
                 match tokio::fs::write(path_str, svg.as_bytes()).await {
                     Ok(()) => {
+                        self.report_screenshot(session_id, shot).await;
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                         let pixel_w = (f64::from(snapshot.cols) * theme.cell_width) as usize;
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -802,6 +837,7 @@ impl ShadowPtyServer {
                     ))),
                 }
             } else {
+                self.report_screenshot(session_id, shot).await;
                 Ok(text_result(svg))
             }
         }

@@ -4,6 +4,7 @@ pub mod palette;
 pub mod pty_manager;
 pub mod rasterizer;
 pub mod recorder;
+pub mod report;
 pub mod screen;
 pub mod screenshot;
 pub mod server;

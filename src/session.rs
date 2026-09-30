@@ -6,7 +6,7 @@ use std::io::{PipeReader, PipeWriter, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{OnResize, VoidListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -21,11 +21,12 @@ use rustix::process::{
 };
 use rustix_openpty::openpty;
 use rustix_openpty::rustix::termios::Winsize;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 use crate::input::parse_input_keys;
 use crate::output::{Pattern, SessionOutput, describe_patterns, first_match};
 use crate::recorder::{AsciicastRecorder, SharedRecorder};
+use crate::report::{Outcome, ReportEvent, ReportTotals, ScreenshotTaken, SessionReport};
 use crate::screen::Screen;
 
 /// Session id used when a tool call doesn't specify one.
@@ -148,7 +149,8 @@ pub struct ProcessExit {
 }
 
 /// Where expect searches for its pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ExpectTarget {
     /// Output not yet consumed by an earlier expect or screen read; a match consumes it.
     Stream,
@@ -229,6 +231,8 @@ pub struct PtyConfig<'a> {
     pub rows: u16,
     pub cols: u16,
     pub record_path: Option<&'a str>,
+    /// Where to write the JSON Lines session report, if anywhere.
+    pub report_path: Option<&'a str>,
 }
 
 impl<'a> PtyConfig<'a> {
@@ -240,12 +244,19 @@ impl<'a> PtyConfig<'a> {
             rows,
             cols,
             record_path: None,
+            report_path: None,
         }
     }
 
     #[must_use]
     pub const fn with_record_path(mut self, record_path: Option<&'a str>) -> Self {
         self.record_path = record_path;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_report_path(mut self, report_path: Option<&'a str>) -> Self {
+        self.report_path = report_path;
         self
     }
 }
@@ -284,6 +295,7 @@ struct ReaderSinks {
     terminal: Arc<Mutex<Term<VoidListener>>>,
     output: Arc<SessionOutput>,
     recorder: SharedRecorder,
+    report: Arc<SessionReport>,
     shutdown_flag: Arc<AtomicBool>,
     exit: watch::Receiver<Option<ExitStatus>>,
 }
@@ -294,7 +306,7 @@ fn run_pty_reader(mut reader: File, child_exit: &PipeReader, sinks: &ReaderSinks
         output,
         recorder,
         shutdown_flag,
-        exit,
+        ..
     } = sinks;
     let mut buffer = [0u8; 4096];
     let mut parser: Processor<StdSyncHandler> = Processor::new();
@@ -339,31 +351,34 @@ fn run_pty_reader(mut reader: File, child_exit: &PipeReader, sinks: &ReaderSinks
         }
     }
     // Recorded before closing the stream, so the exit event follows the last output and
-    // `wait_exit` sees a complete recording
-    record_exit_status(child_exit, exit, recorder);
+    // `wait_exit` sees a complete recording and report
+    record_exit_status(child_exit, sinks);
     output.close();
 }
 
-/// Writes the child's exit status to the recording. The PTY can close slightly before the exit
-/// watcher reports, so waits up to `EXIT_STATUS_WAIT` for it.
-fn record_exit_status(
-    child_exit: &PipeReader,
-    exit: &watch::Receiver<Option<ExitStatus>>,
-    recorder: &SharedRecorder,
-) {
-    if !recorder.lock().is_ok_and(|rec| rec.is_some()) {
-        return;
-    }
-    if exit.borrow().is_none() {
+/// Writes the child's exit status to the recording and the report. The PTY can close slightly
+/// before the exit watcher reports, so waits up to `EXIT_STATUS_WAIT` for it.
+fn record_exit_status(child_exit: &PipeReader, sinks: &ReaderSinks) {
+    let ReaderSinks {
+        recorder,
+        report,
+        exit,
+        ..
+    } = sinks;
+    // Only wait when someone will see the status
+    let recording = recorder.lock().is_ok_and(|rec| rec.is_some());
+    if exit.borrow().is_none() && (recording || report.is_observed()) {
         wait_for_exit_report(child_exit, EXIT_STATUS_WAIT);
     }
-    let status = *exit.borrow();
-    if let Some(status) = status
-        && let Ok(mut rec_guard) = recorder.lock()
+    let Some(status) = *exit.borrow() else {
+        return;
+    };
+    if let Ok(mut rec_guard) = recorder.lock()
         && let Some(rec) = rec_guard.as_mut()
     {
         let _ = rec.record_exit(status.recorded_code());
     }
+    report.record_exit(status);
 }
 
 enum ReaderEvent {
@@ -520,6 +535,9 @@ fn wait_for_child(pid: Pid) -> ExitStatus {
 /// An autonomous, self-contained interactive PTY session.
 pub struct TuiSession {
     info: RwLock<ProcessInfo>,
+    /// When the session started; the time base of its report.
+    started: Instant,
+    report: Arc<SessionReport>,
     /// Taken when the session drops; see `Drop`.
     pty: Mutex<Option<Pty>>,
     pty_writer: Arc<Mutex<File>>,
@@ -537,9 +555,13 @@ pub struct TuiSession {
 impl TuiSession {
     /// Allocates a PTY, spawns the command in it and starts the background reader thread.
     pub fn spawn(session_id: &str, config: &PtyConfig<'_>) -> Result<Self> {
+        let started = Instant::now();
+        // Created before spawning, so a bad path fails without starting anything
+        let report = Arc::new(SessionReport::create(config.report_path, started)?);
         let (pty, slave_keepalive) = spawn_in_pty(config)?;
 
         let pid = pty.child().id();
+        report.record_start(session_id, config, Some(pid));
         let ExitWatch {
             child_exit,
             exit_reported,
@@ -572,6 +594,7 @@ impl TuiSession {
             terminal: Arc::clone(&terminal),
             output: Arc::clone(&output),
             recorder: Arc::clone(&recorder),
+            report: Arc::clone(&report),
             shutdown_flag: Arc::clone(&shutdown_flag),
             exit: exit.clone(),
         };
@@ -591,6 +614,8 @@ impl TuiSession {
                 cols: config.cols,
                 session_id: session_id.to_string(),
             }),
+            started,
+            report,
             terminal,
             output,
             pty_writer: Arc::new(Mutex::new(pty_writer)),
@@ -630,9 +655,47 @@ impl TuiSession {
         *self.exit.borrow()
     }
 
+    /// When the session started.
+    #[must_use]
+    pub const fn started(&self) -> Instant {
+        self.started
+    }
+
+    /// Receives the session's report events from now on, whether or not it writes a report
+    /// file.
+    #[must_use]
+    pub fn subscribe_report(&self) -> broadcast::Receiver<ReportEvent> {
+        self.report.subscribe()
+    }
+
+    /// Checks run so far, and how many passed and failed.
+    #[must_use]
+    pub fn report_totals(&self) -> ReportTotals {
+        self.report.totals()
+    }
+
+    /// The report file, if the session writes one.
+    #[must_use]
+    pub fn report_path(&self) -> Option<String> {
+        self.report.path().map(str::to_string)
+    }
+
+    /// Adds a screenshot taken of this session to its report.
+    pub fn record_screenshot(&self, shot: &ScreenshotTaken<'_>) {
+        self.report.record_screenshot(shot);
+    }
+
     /// Waits for the process to exit, then returns its status and the output the agent hadn't
     /// seen yet (marked as read).
     pub async fn wait_exit(&self, timeout: Duration) -> Result<ProcessExit> {
+        let started = Instant::now();
+        let result = self.wait_exit_unreported(timeout).await;
+        self.report
+            .record_wait_exit(timeout, &Outcome::new(&result, started.elapsed()));
+        result
+    }
+
+    async fn wait_exit_unreported(&self, timeout: Duration) -> Result<ProcessExit> {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut exit = self.exit.clone();
         let status = match tokio::time::timeout_at(deadline, exit.wait_for(Option::is_some)).await {
@@ -685,6 +748,7 @@ impl TuiSession {
     pub fn send_input(&self, keys: &str) -> Result<usize> {
         let bytes = parse_input_keys(keys);
         self.write_input(&bytes)?;
+        self.report.record_input(keys, bytes.len());
         Ok(bytes.len())
     }
 
@@ -696,6 +760,7 @@ impl TuiSession {
         );
         let payload = format!("{PASTE_START}{text}{PASTE_END}");
         self.write_input(payload.as_bytes())?;
+        self.report.record_paste(text, text.len());
         Ok(text.len())
     }
 
@@ -733,6 +798,7 @@ impl TuiSession {
         {
             let _ = rec.record_resize(cols, rows);
         }
+        self.report.record_resize(rows, cols);
 
         Ok((rows, cols))
     }
@@ -768,6 +834,14 @@ impl TuiSession {
     /// Waits until one of the expectation's patterns matches, on the rendered screen or in the
     /// unread output. With several patterns, the earliest match wins (ties: the first listed).
     pub async fn expect(&self, expectation: &Expectation) -> Result<ExpectMatch> {
+        let started = Instant::now();
+        let result = self.expect_unreported(expectation).await;
+        self.report
+            .record_expect(expectation, &Outcome::new(&result, started.elapsed()));
+        result
+    }
+
+    async fn expect_unreported(&self, expectation: &Expectation) -> Result<ExpectMatch> {
         let Expectation {
             patterns,
             target,
@@ -822,8 +896,20 @@ impl TuiSession {
     /// and returns how long that took. Returns at once if they're already absent, and fails as
     /// soon as the process has exited with the text still showing.
     pub async fn wait_gone(&self, patterns: &[Pattern], timeout: Duration) -> Result<Duration> {
+        let started = Instant::now();
+        let result = self.wait_gone_unreported(patterns, timeout).await;
+        self.report
+            .record_wait_gone(patterns, timeout, &Outcome::new(&result, started.elapsed()));
+        result
+    }
+
+    async fn wait_gone_unreported(
+        &self,
+        patterns: &[Pattern],
+        timeout: Duration,
+    ) -> Result<Duration> {
         anyhow::ensure!(!patterns.is_empty(), "no pattern to wait for");
-        let started = tokio::time::Instant::now();
+        let started = Instant::now();
         self.output
             .wait_for(timeout, || {
                 first_match(patterns, self.screen_text().as_bytes())
@@ -843,14 +929,30 @@ impl TuiSession {
 
     /// Waits until no output has arrived for `quiet_period`, or times out.
     pub async fn wait_stable(&self, quiet_period: Duration, timeout: Duration) -> Result<()> {
-        self.output
+        let started = Instant::now();
+        let result = self
+            .output
             .wait_stable(quiet_period, timeout)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
+            .map_err(|e| anyhow::anyhow!("{e}"));
+        self.report.record_wait_stable(
+            quiet_period,
+            timeout,
+            &Outcome::new(&result, started.elapsed()),
+        );
+        result
     }
 
     /// Sequentially executes commands and validates prompt appearances.
     pub async fn run_script(&self, script: &Script<'_>) -> Result<ScriptOutcome> {
+        let started = Instant::now();
+        let result = self.run_script_unreported(script).await;
+        self.report
+            .record_run_script(script, &Outcome::new(&result, started.elapsed()));
+        result
+    }
+
+    async fn run_script_unreported(&self, script: &Script<'_>) -> Result<ScriptOutcome> {
         let Script {
             commands,
             prompt,
@@ -952,12 +1054,16 @@ impl TuiSession {
         }
 
         // Normally already recorded by the reader; covers a reader that didn't finish in time
-        if let Some(status) = self.exit_status()
+        let mut exit = self.exit.clone();
+        let _ = tokio::time::timeout(EXIT_STATUS_WAIT, exit.wait_for(Option::is_some)).await;
+        let status = self.exit_status();
+        if let Some(status) = status
             && let Ok(mut rec_guard) = self.recorder.lock()
             && let Some(rec) = rec_guard.as_mut()
         {
             let _ = rec.record_exit(status.recorded_code());
         }
+        self.report.finish(status);
 
         Ok(())
     }
@@ -969,16 +1075,32 @@ impl Drop for TuiSession {
         signal_child(pid, Signal::KILL);
         self.shutdown_flag.store(true, Ordering::SeqCst);
 
+        let exit_reported = self.exit_reported.take();
+        // Finish the report now, so it's complete when the session is gone. The killed child's
+        // status normally arrives within milliseconds.
+        if self.report.is_observed() {
+            if let Some(exit_reported) = &exit_reported
+                && self.exit_status().is_none()
+            {
+                wait_for_exit_report(exit_reported, EXIT_STATUS_WAIT);
+            }
+            self.report.finish(self.exit_status());
+        }
+
         // `Pty`'s `Drop` reaps the child, and once it's reaped its exit status is gone. So keep
         // the `Pty` alive in the background until the exit watcher has read the status (the
         // reader thread then records it), instead of racing it here.
         let pty = lock_mutex(&self.pty).take();
-        let exit_reported = self.exit_reported.take();
         if let (Some(pty), Some(exit_reported)) = (pty, exit_reported) {
+            let report = Arc::clone(&self.report);
+            let exit = self.exit.clone();
             let reaper = thread::Builder::new()
                 .name(format!("shadowpty-reap-{}", pid.unwrap_or_default()))
                 .spawn(move || {
                     wait_for_exit_report(&exit_reported, REAP_DELAY_LIMIT);
+                    // Normally already finished by `drop`
+                    let status = *exit.borrow();
+                    report.finish(status);
                     drop(pty);
                 });
             if let Err(e) = reaper {

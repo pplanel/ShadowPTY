@@ -40,7 +40,7 @@ ShadowPTY closes that gap. The assistant gets eyes (the screen, with colors), ha
 - **Write the test before the feature** in plain language: *"When I press `q`, a confirmation dialog appears with 'Quit? (y/n)' highlighted."* Let the assistant run it red, implement, run it green.
 - **Assert on what matters**: exact text, where it appears on screen, and its color ("the error line is red", "the selected item is inverted").
 - **No flaky sleeps.** The assistant waits for the text to appear (or for the screen to settle) instead of guessing how long to pause.
-- **Evidence on every run**: a recording and screenshots you can attach to a bug report or CI artifact, and replay step by step.
+- **Evidence on every run**: a recording and screenshots you can attach to a bug report or CI artifact, and replay step by step, plus a JSON report of every check: what was waited for, whether it passed, and how long it took.
 
 ### Developers of CLI and TUI tools
 - Let an assistant **reproduce a bug interactively**, resize the terminal to test layouts, and confirm the fix.
@@ -87,6 +87,7 @@ What the assistant "reads" is the screen as text, with colors kept:
 | ⏳ **Wait for things** | Until some text appears or disappears, the screen settles, or the app exits (with its exit code) — no fixed sleeps |
 | 📸 **Screenshots** | PNG the assistant can see, or SVG for pixel-exact comparisons |
 | 🎬 **Recordings** | Standard [asciinema](https://asciinema.org) files with real timing |
+| ✅ **Test reports** | A JSON Lines log of every check (passed or failed, and how long it took) and a summary, e.g. `5 checks, 4 passed, 1 failed` |
 | 📐 **Resize** | Test how the app adapts to small and large windows |
 | 🧩 **Several apps at once** | Each in its own named session |
 | 🧹 **Clean shutdown** | Closing a session stops the app and anything it spawned |
@@ -150,6 +151,8 @@ A simple loop that works well with an assistant:
 5. **Check the edges**: small terminal size, long text, the app being slow to respond.
 
 Because the assistant waits for real on-screen events instead of fixed delays, these checks stay reliable as the app gets faster or slower.
+
+Ask for a report too (*"…and write a report to `/tmp/todo.jsonl`"*) and every check the assistant makes is logged as it happens: what it waited for, whether it passed, how long it took, and the app's exit code, ending with a summary such as `5 checks, 4 passed, 1 failed`. It's plain JSON Lines, so CI can read it, and you can follow it live with `tail -f`. The format is in the [technical reference](docs/reference.md#session-report).
 
 ---
 

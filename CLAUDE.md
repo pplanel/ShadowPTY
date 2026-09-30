@@ -28,6 +28,7 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 - `src/palette.rs`: base palette, app color overrides (OSC 4/10/11/12), dim/inverse/hidden resolution. Shared by text and screenshots.
 - `src/screenshot.rs` (SVG) and `src/rasterizer.rs` (PNG, `fontdue` + embedded JetBrains Mono in `assets/fonts/`).
 - `src/input.rs`: `<ENTER>`, `<UP>`, `<CTRL+C>`, … key tokens to bytes. `src/recorder.rs`: asciicast v3.
+- `src/report.rs`: session report. Every session broadcasts `ReportEvent`s (inputs, checks, screenshots, exit, summary); `report_path` also writes them as JSON Lines. The reader writes the `exit` entry once, after the last output; the `summary` is written once when the session ends (`finish`), never at process exit.
 
 ## Invariants
 
@@ -50,5 +51,5 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 - `anyhow::Result` in the session and manager; tools convert errors to `CallToolResult::error`.
 - Tests default to a **43 rows × 155 cols** screen unless told otherwise.
 - Integration tests use real processes (`sh -c`, `cat`); wait with `expect`/`wait_stable`, not fixed sleeps.
-- Tool results are short, human-like text for the model (it relays them to the person). Machine-readable output goes to files written during the session: the asciicast recording and, once built, the JSON session report (`docs/expect-parity/ROADMAP.md`).
+- Tool results are short, human-like text for the model (it relays them to the person). Machine-readable output goes to files written during the session: the asciicast recording and the JSON session report (`report_path`, see `docs/reference.md`). New checks should be logged to the report (`SessionReport` in `src/report.rs`).
 - New tools or parameters: update `docs/reference.md` (and the capabilities table in `README.md` if users would notice).

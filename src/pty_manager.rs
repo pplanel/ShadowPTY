@@ -8,9 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 
 use crate::output::Pattern;
+pub use crate::report::{ReportEvent, ReportTotals, ScreenshotTaken};
 use crate::screen::Screen;
 pub use crate::session::{
     DEFAULT_SESSION_ID, ExitStatus, ExpectMatch, ExpectTarget, Expectation, ProcessExit,
@@ -20,6 +21,16 @@ pub use crate::session::{
 
 fn no_session(session_id: &str) -> String {
     format!("no active PTY session with id '{session_id}'; call tui_start first")
+}
+
+/// A session that was stopped, and the totals of its report.
+#[derive(Debug, Clone)]
+pub struct StoppedSession {
+    pub info: ProcessInfo,
+    /// The report file, if the session wrote one. It's complete (exit and summary) by the time
+    /// `stop_session` returns.
+    pub report_path: Option<String>,
+    pub totals: ReportTotals,
 }
 
 /// Thread-safe manager for concurrent headless PTY sessions, keyed by session id.
@@ -216,6 +227,27 @@ impl PtyManager {
         self.snapshot_session(DEFAULT_SESSION_ID).await
     }
 
+    /// Subscribes to the target session's report events (sent whether or not it writes a report
+    /// file). Events from before the call aren't replayed.
+    pub async fn subscribe_report_session(
+        &self,
+        session_id: &str,
+    ) -> Result<broadcast::Receiver<ReportEvent>> {
+        let session = self.get_session(session_id).await?;
+        Ok(session.subscribe_report())
+    }
+
+    /// Adds a screenshot taken of the target session to its report.
+    pub async fn record_screenshot_session(
+        &self,
+        session_id: &str,
+        shot: &ScreenshotTaken<'_>,
+    ) -> Result<()> {
+        let session = self.get_session(session_id).await?;
+        session.record_screenshot(shot);
+        Ok(())
+    }
+
     /// Checks if a session with the given id is currently active.
     pub async fn is_session_active(&self, session_id: &str) -> bool {
         self.sessions.lock().await.contains_key(session_id)
@@ -235,21 +267,26 @@ impl PtyManager {
         summaries
     }
 
-    /// Stops the target session, killing its process group and reaping the child.
-    pub async fn stop_session(&self, session_id: &str) -> Result<ProcessInfo> {
+    /// Stops the target session, killing its process group and reaping the child. Its report
+    /// gets its exit and summary entries.
+    pub async fn stop_session(&self, session_id: &str) -> Result<StoppedSession> {
         let session = self
             .sessions
             .lock()
             .await
             .remove(session_id)
             .with_context(|| no_session(session_id))?;
-        let info = session.info();
+        let stopped = StoppedSession {
+            info: session.info(),
+            report_path: session.report_path(),
+            totals: session.report_totals(),
+        };
         tokio::task::spawn_blocking(move || drop(session)).await?;
-        Ok(info)
+        Ok(stopped)
     }
 
     /// Stops the default session.
-    pub async fn stop_app(&self) -> Result<ProcessInfo> {
+    pub async fn stop_app(&self) -> Result<StoppedSession> {
         self.stop_session(DEFAULT_SESSION_ID).await
     }
 }
@@ -301,8 +338,9 @@ mod tests {
         mgr.start_app(&cfg).await.unwrap();
         assert!(mgr.is_active().await);
 
-        let info = mgr.stop_app().await.unwrap();
-        assert_eq!(info.command, "cat");
+        let stopped = mgr.stop_app().await.unwrap();
+        assert_eq!(stopped.info.command, "cat");
+        assert_eq!(stopped.report_path, None);
         assert!(!mgr.is_active().await);
 
         assert!(mgr.stop_app().await.is_err());

@@ -1,6 +1,6 @@
 # Roadmap: `rust-expect` API parity
 
-> **Status:** In progress (Phase 1 done; next: session report, then Phase 2)
+> **Status:** In progress (Phase 1 and the session report done; next: Phase 2)
 > **Started:** 2026-09-30
 > **Branch:** `feat/expect-parity`
 > **Tasks:** [TODO.md](./TODO.md)
@@ -52,6 +52,8 @@ The waits testers need most.
 | ✅ Text around the match | `before` / `after` | `tui_expect` returns `before` and `after` as well as `matched` |
 
 ### Session report (JSON)
+
+✅ Done: `report_path` on `tui_start`; format in [reference](../reference.md#session-report).
 
 Not a `rust-expect` feature, but the natural companion to the waits in Phase 1; built once they're all in place, so the report covers every kind of check. It also shares groundwork with session metrics (5.2), in line with the RFC goal of measuring things.
 
