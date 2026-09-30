@@ -16,7 +16,9 @@ use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 use anyhow::{Context, Result};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
-use rustix::process::{Pid, WaitId, WaitIdOptions, WaitIdStatus, waitid};
+use rustix::process::{
+    Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process, kill_process_group, waitid,
+};
 use rustix_openpty::openpty;
 use rustix_openpty::rustix::termios::Winsize;
 use tokio::sync::watch;
@@ -41,6 +43,10 @@ const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long the reader waits for the exit watcher after the PTY closes, to record the status.
 const EXIT_STATUS_WAIT: Duration = Duration::from_secs(1);
+
+/// How long an ended session's `Pty` is kept, so the exit watcher can read the killed child's
+/// status before `Pty`'s `Drop` reaps it.
+const REAP_DELAY_LIMIT: Duration = Duration::from_secs(10);
 
 /// How long `wait_exit` keeps waiting for output to drain after the child exits.
 const EXIT_DRAIN_GRACE: Duration = Duration::from_millis(500);
@@ -349,7 +355,7 @@ fn record_exit_status(
         return;
     }
     if exit.borrow().is_none() {
-        wait_for_exit_report(child_exit);
+        wait_for_exit_report(child_exit, EXIT_STATUS_WAIT);
     }
     let status = *exit.borrow();
     if let Some(status) = status
@@ -406,10 +412,24 @@ fn watch_child_exit(pid: u32, exit: &watch::Sender<Option<ExitStatus>>, notifier
     drop(notifier);
 }
 
+/// Sends `signal` to the child's process group and to the child itself. The child only starts
+/// its own group (setsid) right after it's forked, so a session ended immediately after `tui_start`
+/// can have no group yet; signalling the process too makes sure it's hit either way. The child is
+/// only reaped when `Pty` drops, after every caller of this, so its pid can't have been reused.
+fn signal_child(pid: Option<u32>, signal: Signal) {
+    if let Some(pid) = pid
+        .and_then(|pid| i32::try_from(pid).ok())
+        .and_then(Pid::from_raw)
+    {
+        let _ = kill_process_group(pid, signal);
+        let _ = kill_process(pid, signal);
+    }
+}
+
 /// Blocks until the exit watcher has published the child's status (it closes the pipe right
-/// after), for at most `EXIT_STATUS_WAIT`.
-fn wait_for_exit_report(child_exit: &PipeReader) {
-    let timeout = Timespec::try_from(EXIT_STATUS_WAIT).ok();
+/// after), for at most `limit`.
+fn wait_for_exit_report(child_exit: &PipeReader, limit: Duration) {
+    let timeout = Timespec::try_from(limit).ok();
     let mut fds = [PollFd::new(child_exit, PollFlags::IN)];
     while matches!(
         poll(&mut fds, timeout.as_ref()),
@@ -500,7 +520,8 @@ fn wait_for_child(pid: Pid) -> ExitStatus {
 /// An autonomous, self-contained interactive PTY session.
 pub struct TuiSession {
     info: RwLock<ProcessInfo>,
-    pty: Mutex<Pty>,
+    /// Taken when the session drops; see `Drop`.
+    pty: Mutex<Option<Pty>>,
     pty_writer: Arc<Mutex<File>>,
     terminal: Arc<Mutex<Term<VoidListener>>>,
     output: Arc<SessionOutput>,
@@ -509,7 +530,8 @@ pub struct TuiSession {
     reader_handle: Mutex<Option<JoinHandle<()>>>,
     exit: watch::Receiver<Option<ExitStatus>>,
     /// Readable once the exit watcher has published the status.
-    exit_reported: PipeReader,
+    /// Taken when the session drops; see `Drop`.
+    exit_reported: Option<PipeReader>,
 }
 
 impl TuiSession {
@@ -572,12 +594,12 @@ impl TuiSession {
             terminal,
             output,
             pty_writer: Arc::new(Mutex::new(pty_writer)),
-            pty: Mutex::new(pty),
+            pty: Mutex::new(Some(pty)),
             recorder,
             shutdown_flag,
             reader_handle: Mutex::new(Some(reader_handle)),
             exit,
-            exit_reported,
+            exit_reported: Some(exit_reported),
         })
     }
 
@@ -686,8 +708,7 @@ impl TuiSession {
             cell_height: 0,
         };
 
-        {
-            let mut pty = lock_mutex(&self.pty);
+        if let Some(pty) = lock_mutex(&self.pty).as_mut() {
             pty.on_resize(size);
         }
 
@@ -906,26 +927,11 @@ impl TuiSession {
 
     /// Orderly termination: signals child process, reaps zombie, joins reader thread.
     pub async fn terminate(&self) -> Result<()> {
-        #[cfg(unix)]
-        if let Some(pid) = self.info().pid {
-            let _ = std::process::Command::new("kill")
-                .args(["-TERM", &format!("-{pid}")])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-
+        let pid = self.info().pid;
+        signal_child(pid, Signal::TERM);
         self.shutdown_flag.store(true, Ordering::SeqCst);
-
-        // Escalation to SIGKILL on Unix if not terminated
-        #[cfg(unix)]
-        if let Some(pid) = self.info().pid {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &format!("-{pid}")])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
+        // Escalate right away: interactive shells ignore SIGTERM
+        signal_child(pid, Signal::KILL);
 
         let handle = self.reader_handle.lock().ok().and_then(|mut h| h.take());
         if let Some(handle) = handle {
@@ -941,14 +947,7 @@ impl TuiSession {
                 tracing::warn!(
                     "PTY reader didn't stop within {READER_JOIN_TIMEOUT:?}; sending SIGKILL"
                 );
-                #[cfg(unix)]
-                if let Some(pid) = self.info().pid {
-                    let _ = std::process::Command::new("kill")
-                        .args(["-KILL", &pid.to_string()])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status();
-                }
+                signal_child(pid, Signal::KILL);
             }
         }
 
@@ -966,21 +965,25 @@ impl TuiSession {
 
 impl Drop for TuiSession {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Ok(info) = self.info.read()
-            && let Some(pid) = info.pid
-        {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &format!("-{pid}")])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
+        let pid = read_rwlock(&self.info).pid;
+        signal_child(pid, Signal::KILL);
         self.shutdown_flag.store(true, Ordering::SeqCst);
-        // `Pty`'s `Drop` reaps the child right after this, which would lose its exit status, so
-        // let the watcher read it first; the reader thread then records it
-        if self.exit_status().is_none() {
-            wait_for_exit_report(&self.exit_reported);
+
+        // `Pty`'s `Drop` reaps the child, and once it's reaped its exit status is gone. So keep
+        // the `Pty` alive in the background until the exit watcher has read the status (the
+        // reader thread then records it), instead of racing it here.
+        let pty = lock_mutex(&self.pty).take();
+        let exit_reported = self.exit_reported.take();
+        if let (Some(pty), Some(exit_reported)) = (pty, exit_reported) {
+            let reaper = thread::Builder::new()
+                .name(format!("shadowpty-reap-{}", pid.unwrap_or_default()))
+                .spawn(move || {
+                    wait_for_exit_report(&exit_reported, REAP_DELAY_LIMIT);
+                    drop(pty);
+                });
+            if let Err(e) = reaper {
+                tracing::warn!("failed to spawn PTY reaper thread: {e}");
+            }
         }
     }
 }

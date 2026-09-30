@@ -37,7 +37,7 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 - **Stream expect never re-matches seen output**: a match consumes up to its end, and `tui_read` marks everything read.
 - The reader flushes an unterminated synchronized-output frame (`?2026`) after vte's sync timeout and must wake waiters when the screen changes without new output (`SessionOutput::notify_screen_changed`).
 - The reader keeps a PTY slave fd open until it's done: macOS discards unread output ~0.5 s after the last slave fd closes. Child exit is signalled by `watch_child_exit` (`waitid` with `WNOWAIT`, so `Pty`'s `Drop` still reaps).
-- The exit status comes from `waitid` in the watcher and is lost once the child is reaped, and `Pty`'s `Drop` reaps it. So `TuiSession::drop` waits for the exit report before its fields drop, and the reader records the exit event after the last output.
+- The exit status comes from `waitid` (with `WNOWAIT`) in the watcher and is lost once the child is reaped, and `Pty`'s `Drop` reaps it. So `TuiSession::drop` never drops the `Pty` itself: it kills the child (process and group, via `signal_child`) and hands the `Pty` to a reaper thread that waits for the exit report first. The reader records the exit event after the last output.
 - Stopping a session kills the whole process group and reaps the child. `terminate` waits at most `READER_JOIN_TIMEOUT` for the reader (see the open Linux issue in `TODO.md`).
 - Logging goes to stderr only; stdout is the MCP JSON-RPC channel.
 - The server must survive a crashing child and report errors as tool errors; no panics in library code.

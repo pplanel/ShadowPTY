@@ -15,7 +15,7 @@ Legend: `[ ]` to do, `[~]` in progress, `[x]` done.
 - [x] `PtyManager::wait_exit_session` / `wait_exit`.
 - [x] `tui_wait_exit { session_id?, timeout_ms? = 10000 }`.
 - [x] `tui_list_sessions` includes `exit_status`.
-- [x] `TuiSession::drop` waits for the exit report before `Pty` reaps the child (Linux lost the status 13/30 runs without it).
+- [x] The child is never reaped before the watcher reads its status: `TuiSession::drop` hands the `Pty` to a reaper thread that waits for the exit report (Linux lost the status 13/30 runs without it; a 1 s wait in `Drop` still failed once on CI). Kills go to the process and its group via `rustix` instead of the `kill` command.
 - [x] Tests (`tests/exit_test.rs`): exit code, killed by signal, timeout while running, recording ends with the real code, recording after `tui_end`, tools.
 - [x] Docs: reference (new tool, list output), README capabilities; tick the recording item in the root `TODO.md`.
 
