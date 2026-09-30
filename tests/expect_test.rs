@@ -9,7 +9,7 @@ use shadowpty::pty_manager::{ExpectTarget, Expectation, PtyConfig, PtyManager, S
 
 fn expectation(pattern: &str, target: ExpectTarget, timeout_ms: u64) -> Expectation {
     Expectation {
-        pattern: Pattern::literal(pattern).unwrap(),
+        patterns: vec![Pattern::literal(pattern).unwrap()],
         target,
         timeout: Duration::from_millis(timeout_ms),
     }
@@ -43,13 +43,13 @@ async fn test_expect_regex_matching() {
 
     let matched = manager
         .expect(&Expectation {
-            pattern: Pattern::regex(r"STATUS_CODE_\d{3}_OK").unwrap(),
+            patterns: vec![Pattern::regex(r"STATUS_CODE_\d{3}_OK").unwrap()],
             target: ExpectTarget::Stream,
             timeout: Duration::from_secs(3),
         })
         .await
         .expect("regex match");
-    assert_eq!(matched, "STATUS_CODE_200_OK");
+    assert_eq!(matched.matched, "STATUS_CODE_200_OK");
     manager.stop_app().await.expect("stop");
 }
 
@@ -155,7 +155,7 @@ async fn test_pending_expect_does_not_block_other_calls() {
 
     manager.send_input("RELEASE<ENTER>").await.expect("release");
     let matched = pending.await.expect("join").expect("pending expect");
-    assert_eq!(matched, "RELEASE");
+    assert_eq!(matched.matched, "RELEASE");
     manager.stop_app().await.expect("stop");
 }
 
@@ -270,9 +270,12 @@ async fn test_expect_and_script_tools() {
 
     let invalid = server
         .tui_expect(Parameters(TuiExpectParams {
-            pattern: "([".to_string(),
+            pattern: Some("([".to_string()),
+            patterns: None,
+            syntax: None,
             is_regex: Some(true),
             screen_mode: None,
+            include_context: None,
             timeout_ms: Some(100),
             session_id: None,
         }))
@@ -284,6 +287,7 @@ async fn test_expect_and_script_tools() {
         .tui_run_script(Parameters(TuiRunScriptParams {
             commands: vec!["echo tool-output".to_string()],
             prompt_pattern: Some("READY> ".to_string()),
+            syntax: None,
             is_regex: None,
             timeout_ms: Some(5_000),
             session_id: None,
@@ -316,5 +320,418 @@ async fn test_unterminated_sync_frame_is_flushed() {
         .await
         .expect("frame flushed to the screen");
     assert!(started.elapsed() < Duration::from_secs(1));
+    manager.stop_app().await.expect("stop");
+}
+
+fn patterns(sources: &[&str], target: ExpectTarget, timeout_ms: u64) -> Expectation {
+    Expectation {
+        patterns: sources
+            .iter()
+            .map(|source| Pattern::literal(source).unwrap())
+            .collect(),
+        target,
+        timeout: Duration::from_millis(timeout_ms),
+    }
+}
+
+#[tokio::test]
+async fn test_expect_first_of_several_patterns_in_stream() {
+    let manager = PtyManager::new();
+    start_sh(
+        &manager,
+        "sleep 0.2; printf 'Connecting...\\nPermission denied\\n'; sleep 5",
+    )
+    .await;
+
+    let found = manager
+        .expect(&patterns(
+            &["Password:", "Permission denied", "Welcome"],
+            ExpectTarget::Stream,
+            5_000,
+        ))
+        .await
+        .expect("one of the patterns");
+    assert_eq!(found.index, 1);
+    assert_eq!(found.matched, "Permission denied");
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_expect_first_of_several_patterns_on_screen() {
+    let manager = PtyManager::new();
+    start_sh(
+        &manager,
+        "printf 'Status: \\033[32mREADY\\033[0m\\n'; sleep 5",
+    )
+    .await;
+
+    let found = manager
+        .expect(&patterns(&["FAILED", "READY"], ExpectTarget::Screen, 5_000))
+        .await
+        .expect("one of the patterns");
+    assert_eq!(found.index, 1);
+    assert_eq!(found.matched, "READY");
+
+    let err = manager
+        .expect(&patterns(&["FAILED", "CRASHED"], ExpectTarget::Screen, 200))
+        .await
+        .expect_err("neither is on screen");
+    assert!(
+        format!("{err:#}").contains("any of 'FAILED', 'CRASHED'"),
+        "{err:#}"
+    );
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_expect_tool_with_several_patterns() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiExpectParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    start_sh(&manager, "printf 'Build failed: 2 errors\\n'; sleep 5").await;
+
+    let matched = server
+        .tui_expect(Parameters(TuiExpectParams {
+            patterns: Some(vec![
+                "Build succeeded".to_string(),
+                "Build failed".to_string(),
+            ]),
+            timeout_ms: Some(5_000),
+            ..TuiExpectParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!matched.is_error.unwrap_or(false));
+    let text = serde_json::to_string(&matched.content).expect("serialize");
+    assert!(
+        text.contains("Matched pattern 2 of 2 ('Build failed')"),
+        "{text}"
+    );
+
+    for invalid in [
+        TuiExpectParams::default(),
+        TuiExpectParams {
+            patterns: Some(Vec::new()),
+            ..TuiExpectParams::default()
+        },
+        TuiExpectParams {
+            pattern: Some("a".to_string()),
+            patterns: Some(vec!["b".to_string()]),
+            ..TuiExpectParams::default()
+        },
+    ] {
+        let result = server
+            .tui_expect(Parameters(invalid))
+            .await
+            .expect("tool call ok");
+        assert!(result.is_error.unwrap_or(false));
+    }
+    manager.stop_app().await.expect("stop");
+}
+
+/// Starts `sh -c script` at the default test size (43×155).
+async fn start_sh_43x155(manager: &PtyManager, script: &str) {
+    let args = vec!["-c".to_string(), script.to_string()];
+    manager
+        .start_app(&PtyConfig::new("sh", &args, 43, 155))
+        .await
+        .expect("start sh");
+}
+
+fn literals(sources: &[&str]) -> Vec<Pattern> {
+    sources
+        .iter()
+        .map(|source| Pattern::literal(source).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn test_wait_gone_returns_when_spinner_clears() {
+    let manager = PtyManager::new();
+    start_sh_43x155(
+        &manager,
+        "printf 'Loading...'; sleep 0.4; printf '\\r\\033[KDone\\n'; sleep 5",
+    )
+    .await;
+    manager
+        .expect(&expectation("Loading", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("spinner shown");
+
+    let elapsed = manager
+        .wait_gone(&literals(&["Loading"]), Duration::from_secs(5))
+        .await
+        .expect("spinner cleared");
+    assert!(elapsed >= Duration::from_millis(100), "{elapsed:?}");
+    let screen = manager.read_screen().await.expect("read");
+    assert!(
+        screen.contains("Done") && !screen.contains("Loading"),
+        "{screen}"
+    );
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_wait_gone_is_immediate_when_text_is_absent() {
+    let manager = PtyManager::new();
+    start_sh_43x155(&manager, "printf 'Ready\\n'; sleep 5").await;
+    manager
+        .expect(&expectation("Ready", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("ready");
+
+    let elapsed = manager
+        .wait_gone(
+            &literals(&["Loading", "Please wait"]),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("nothing to wait for");
+    assert!(elapsed < Duration::from_millis(500), "{elapsed:?}");
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_wait_gone_times_out_and_shows_screen() {
+    let manager = PtyManager::new();
+    start_sh_43x155(&manager, "printf 'Loading forever'; sleep 5").await;
+    manager
+        .expect(&expectation("Loading", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("shown");
+
+    let err = manager
+        .wait_gone(&literals(&["Loading"]), Duration::from_millis(300))
+        .await
+        .expect_err("never clears");
+    let message = format!("{err:#}");
+    assert!(message.contains("'Loading' still on screen"), "{message}");
+    assert!(message.contains("Loading forever"), "{message}");
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_wait_gone_fails_fast_when_process_exits_with_text() {
+    let manager = PtyManager::new();
+    start_sh_43x155(&manager, "printf 'Loading'; sleep 0.2").await;
+    manager
+        .expect(&expectation("Loading", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("shown");
+
+    let started = Instant::now();
+    let err = manager
+        .wait_gone(&literals(&["Loading"]), Duration::from_secs(10))
+        .await
+        .expect_err("can no longer clear");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(format!("{err:#}").contains("exited"), "{err:#}");
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_wait_gone_tool() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiWaitGoneParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    start_sh_43x155(
+        &manager,
+        "printf 'Syncing...'; sleep 0.3; printf '\\r\\033[KSynced\\n'; sleep 5",
+    )
+    .await;
+    manager
+        .expect(&expectation("Syncing", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("shown");
+
+    let gone = server
+        .tui_wait_gone(Parameters(TuiWaitGoneParams {
+            patterns: Some(vec!["Syncing".to_string(), "Loading".to_string()]),
+            timeout_ms: Some(5_000),
+            ..TuiWaitGoneParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!gone.is_error.unwrap_or(false));
+    let text = serde_json::to_string(&gone.content).expect("serialize");
+    assert!(
+        text.contains("2 patterns are no longer on screen"),
+        "{text}"
+    );
+
+    let invalid = server
+        .tui_wait_gone(Parameters(TuiWaitGoneParams::default()))
+        .await
+        .expect("tool call ok");
+    assert!(invalid.is_error.unwrap_or(false));
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_glob_patterns_in_tools() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{
+        PatternSyntax, ShadowPtyServer, TuiExpectParams, TuiRunScriptParams, TuiWaitGoneParams,
+    };
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    start_interactive_sh(&manager).await;
+
+    // Stream expect: `*` stops at the end of the line
+    manager
+        .send_input("printf 'Build finished: 3 warnings\\nnext line\\n'<ENTER>")
+        .await
+        .expect("send");
+    let matched = server
+        .tui_expect(Parameters(TuiExpectParams {
+            pattern: Some("Build*: ? warnings".to_string()),
+            syntax: Some(PatternSyntax::Glob),
+            timeout_ms: Some(5_000),
+            ..TuiExpectParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    let text = serde_json::to_string(&matched.content).expect("serialize");
+    assert!(
+        !matched.is_error.unwrap_or(false) && text.contains("Build finished: 3 warnings"),
+        "{text}"
+    );
+
+    // Glob prompt for run_script
+    let script = server
+        .tui_run_script(Parameters(TuiRunScriptParams {
+            commands: vec!["echo glob-ok".to_string()],
+            prompt_pattern: Some("[A-Z]*> ".to_string()),
+            syntax: Some(PatternSyntax::Glob),
+            is_regex: None,
+            timeout_ms: Some(5_000),
+            session_id: None,
+        }))
+        .await
+        .expect("tool call ok");
+    let text = serde_json::to_string(&script.content).expect("serialize");
+    assert!(
+        !script.is_error.unwrap_or(false) && text.contains("glob-ok"),
+        "{text}"
+    );
+
+    // Glob in wait_gone: nothing like "Loading 42%" is on screen
+    let gone = server
+        .tui_wait_gone(Parameters(TuiWaitGoneParams {
+            pattern: Some("Loading [0-9]*%".to_string()),
+            syntax: Some(PatternSyntax::Glob),
+            timeout_ms: Some(1_000),
+            ..TuiWaitGoneParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!gone.is_error.unwrap_or(false));
+
+    // `syntax` and `is_regex` can't contradict each other
+    let conflict = server
+        .tui_expect(Parameters(TuiExpectParams {
+            pattern: Some("x".to_string()),
+            syntax: Some(PatternSyntax::Glob),
+            is_regex: Some(true),
+            timeout_ms: Some(100),
+            ..TuiExpectParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    let text = serde_json::to_string(&conflict.content).expect("serialize");
+    assert!(
+        conflict.is_error.unwrap_or(false) && text.contains("disagree"),
+        "{text}"
+    );
+
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_screen_match_reports_row_and_line() {
+    let manager = PtyManager::new();
+    start_sh_43x155(&manager, "printf 'first\\nsecond READY here\\n'; sleep 5").await;
+
+    let found = manager
+        .expect(&expectation("READY", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("on screen");
+    let line = found.line.expect("screen matches have a line");
+    assert_eq!(line.row, 1);
+    assert_eq!(line.text, "second READY here");
+    assert!(found.before.is_empty() && found.after.is_empty());
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_expect_tool_context_and_row() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiExpectParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    start_sh_43x155(
+        &manager,
+        "printf 'compiling crate\\nerror: E0308 mismatched types\\nnote: see above\\n'; sleep 5",
+    )
+    .await;
+    let call = |params: TuiExpectParams| {
+        let server = server.clone();
+        async move {
+            let result = server
+                .tui_expect(Parameters(params))
+                .await
+                .expect("tool call ok");
+            assert!(!result.is_error.unwrap_or(false));
+            let content = serde_json::to_value(&result.content).expect("serialize");
+            content[0]["text"].as_str().expect("text").to_string()
+        }
+    };
+
+    let with_context = call(TuiExpectParams {
+        pattern: Some("error:".to_string()),
+        include_context: Some(true),
+        timeout_ms: Some(5_000),
+        ..TuiExpectParams::default()
+    })
+    .await;
+    assert!(
+        with_context.contains("Output before the match:\ncompiling crate"),
+        "{with_context}"
+    );
+    assert!(
+        with_context.contains("Output after the match (still unread):\n E0308 mismatched types"),
+        "{with_context}"
+    );
+
+    // The text after the match is still unread, and replies are short without include_context
+    let plain = call(TuiExpectParams {
+        pattern: Some("note:".to_string()),
+        timeout_ms: Some(5_000),
+        ..TuiExpectParams::default()
+    })
+    .await;
+    assert_eq!(plain, "Matched \"note:\" in session 'default'");
+
+    let on_screen = call(TuiExpectParams {
+        pattern: Some("E0308".to_string()),
+        screen_mode: Some(true),
+        timeout_ms: Some(5_000),
+        ..TuiExpectParams::default()
+    })
+    .await;
+    assert_eq!(
+        on_screen,
+        "Matched \"E0308\" on row 2: \"error: E0308 mismatched types\" in session 'default'"
+    );
     manager.stop_app().await.expect("stop");
 }

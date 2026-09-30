@@ -3,6 +3,7 @@
 Tool parameters, screen format, recording format and architecture. For an overview, see the [README](../README.md).
 
 - [Tools](#tools)
+- [Pattern syntax](#pattern-syntax)
 - [Reading the screen](#reading-the-screen)
 - [Recording](#recording)
 - [Architecture](#architecture)
@@ -13,7 +14,7 @@ Tool parameters, screen format, recording format and architecture. For an overvi
 
 ## Tools
 
-ShadowPTY exposes 11 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
+ShadowPTY exposes 13 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
 
 | Tool | What it does |
 | :--- | :--- |
@@ -22,11 +23,13 @@ ShadowPTY exposes 11 tools. Every tool except `tui_list_sessions` takes an optio
 | [`tui_paste`](#tui_paste) | Send text as one bracketed paste |
 | [`tui_expect`](#tui_expect) | Wait for a literal or regex in new output or on screen |
 | [`tui_wait_stable`](#tui_wait_stable) | Wait until output goes quiet |
+| [`tui_wait_gone`](#tui_wait_gone) | Wait until text disappears from the screen |
+| [`tui_wait_exit`](#tui_wait_exit) | Wait for the process to exit; get its exit code or signal |
 | [`tui_run_script`](#tui_run_script) | Run shell commands one by one, collecting each output |
 | [`tui_read`](#tui_read) | Read the screen as tagged text |
 | [`tui_take_screenshot`](#tui_take_screenshot) | Render the screen to PNG or SVG |
 | [`tui_resize`](#tui_resize) | Resize the terminal |
-| [`tui_list_sessions`](#tui_list_sessions) | List running sessions |
+| [`tui_list_sessions`](#tui_list_sessions) | List sessions and whether their process has exited |
 | [`tui_end`](#tui_end) | Stop a session and its whole process group |
 
 All waits are capped at 120 seconds.
@@ -68,30 +71,66 @@ Sends `text` wrapped in bracketed-paste markers (DECSET 2004), so shells and edi
 
 ### `tui_expect`
 
-Waits until `pattern` appears, so the agent doesn't need sleep-and-poll loops.
+Waits until `pattern` appears, or the first of several `patterns`, so the agent doesn't need sleep-and-poll loops.
 
 | Parameter | Type | Default | |
 | :--- | :--- | :--- | :--- |
-| `pattern` | string | required | Text or regex |
-| `is_regex` | boolean | `false` | |
+| `pattern` | string | – | Text or regex. Give `pattern` or `patterns` |
+| `patterns` | string[] | – | Several; waits for whichever appears first |
+| `syntax` | `"literal"` \| `"regex"` \| `"glob"` | `"literal"` | Applies to every pattern; see [Pattern syntax](#pattern-syntax) |
+| `is_regex` | boolean | `false` | Older form of `syntax: "regex"` |
 | `screen_mode` | boolean | `false` | Match the rendered screen instead of new output |
+| `include_context` | boolean | `false` | Stream mode: also show output before and after the match |
 | `timeout_ms` | integer | `10000` | |
 
 - **Stream mode** (default) searches output the agent hasn't seen yet — neither returned by `tui_read` nor matched by an earlier `tui_expect` — so it never matches stale text. A match consumes output up to its end.
 - **Screen mode** matches what is actually drawn, including text built from cursor moves and overwrites.
+- With `patterns`, the match that starts earliest wins (if two start at the same place, the one listed first). Only output up to that match is consumed. The reply names the winner, numbered from 1, e.g. `Matched pattern 2 of 3 ('Permission denied'): "Permission denied"`.
+- **The reply** names what matched. In screen mode it also gives the row (from 1) and the full line, e.g. `Matched "READY" on row 3: "Status: READY" in session 'default'`. In stream mode, `include_context: true` adds up to 500 characters of output before the match and after it; the part after stays unread, so a later `tui_expect` can still match it.
 - If the process exits first, it fails right away and returns the last output.
 
 ```json
-{ "pattern": "Build (succeeded|failed)", "is_regex": true, "timeout_ms": 60000 }
+{ "pattern": "Build (succeeded|failed)", "syntax": "regex", "timeout_ms": 60000 }
+```
+
+```json
+{ "patterns": ["Password:", "Permission denied", "$ "], "timeout_ms": 5000 }
 ```
 
 ### `tui_wait_stable`
 
 Waits until no output has arrived for `quiet_period_ms` (default `100`), up to `max_wait_ms` (default `3000`). Returns immediately if the process has exited. Use it before `tui_read` or a screenshot.
 
+### `tui_wait_gone`
+
+Waits until text is no longer on the rendered screen, e.g. a spinner, `Loading…` or a modal, and reports how long that took. Takes `pattern` or `patterns` (then waits until none of them shows), `syntax` (see [Pattern syntax](#pattern-syntax)), and `timeout_ms` (default `10000`).
+
+```json
+{ "pattern": "Loading", "timeout_ms": 30000 }
+```
+
+```text
+'Loading' is no longer on screen in session 'default' (after 1840 ms)
+```
+
+- Returns at once if the text isn't showing. If it may not have appeared yet, wait for it first with `tui_expect` and `screen_mode`, then call `tui_wait_gone`.
+- Re-checks whenever the screen changes. Fails right away if the process exits with the text still on screen, and on timeout shows the current screen.
+
+### `tui_wait_exit`
+
+Waits until the session's process exits (`timeout_ms`, default `10000`) and reports how it ended, plus any output not yet returned by `tui_read` or `tui_expect` (the last 4000 characters). Returns immediately if the process has already exited. The session stays open, so `tui_read` and screenshots still show the final screen until `tui_end`.
+
+```text
+Process in session 'default' exited with code 3.
+Unread output:
+Build failed: 2 errors
+```
+
+A process killed by a signal reports e.g. `killed by signal 9 (SIGKILL)`. If it's still running at the timeout, the call fails with the latest output.
+
 ### `tui_run_script`
 
-Runs `commands` one at a time in a shell session, waiting for `prompt_pattern` (default `"$"`, set `is_regex` for a regex) after each, with `timeout_ms` (default `30000`) per command. Returns each command's output. Earlier output is ignored and each command's echo is skipped, so a command that contains the prompt text doesn't end its own wait. Stops at the first command whose prompt doesn't show up.
+Runs `commands` one at a time in a shell session, waiting for `prompt_pattern` (default `"$"`; `syntax` sets how it's read, see [Pattern syntax](#pattern-syntax)) after each, with `timeout_ms` (default `30000`) per command. Returns each command's output. Earlier output is ignored and each command's echo is skipped, so a command that contains the prompt text doesn't end its own wait. Stops at the first command whose prompt doesn't show up.
 
 ```json
 { "commands": ["cargo build", "cargo test"], "prompt_pattern": "READY> " }
@@ -127,14 +166,37 @@ Resizes the PTY and the screen (`rows`, `cols`), to test how an app re-lays out.
 
 ```json
 [
-  { "id": "default", "command": "bash", "pid": 12001, "rows": 24, "cols": 80, "recording": false },
-  { "id": "htop", "command": "htop", "pid": 12345, "rows": 43, "cols": 155, "recording": true }
+  { "id": "build", "command": "sh", "pid": 12001, "rows": 43, "cols": 155, "recording": false, "exit_status": { "exit_code": 0 } },
+  { "id": "htop", "command": "htop", "pid": 12345, "rows": 43, "cols": 155, "recording": true, "exit_status": null }
 ]
 ```
+
+`exit_status` is `null` while the process runs, then `{ "exit_code": N }`, `{ "signal": N }`, or `"unknown"` if the status couldn't be read.
 
 ### `tui_end`
 
 Stops a session: kills its whole process group (so background children don't leak), reaps the process and closes its recording.
+
+---
+
+## Pattern syntax
+
+`tui_expect`, `tui_wait_gone` and `tui_run_script` read their patterns according to `syntax`:
+
+| `syntax` | Meaning | Example |
+| :--- | :--- | :--- |
+| `"literal"` (default) | The exact text | `"Permission denied"` |
+| `"regex"` | A [Rust regular expression](https://docs.rs/regex/latest/regex/#syntax) | `"Build (succeeded\|failed)"` |
+| `"glob"` | A shell-style wildcard pattern | `"Error:*"`, `"*[Ee]rror*"`, `"v?.?"` |
+
+Globs match **anywhere** in the text, not the whole of it, like `rust-expect`:
+
+- `*` matches any characters and `?` one character, **within a line**, so `Error:*` matches the rest of the error line instead of all output after it;
+- `[abc]`, `[a-z]` and `[!abc]` (or `[^abc]`) match one character from, or not from, a set;
+- `\` makes the next character literal (`\*`), and an unclosed `[` is literal;
+- everything else, including `.`, matches itself.
+
+`is_regex: true` is the older way to say `syntax: "regex"` and still works. A call that sets both and contradicts itself (e.g. `syntax: "glob"` with `is_regex: true`) is rejected.
 
 ---
 
@@ -162,7 +224,7 @@ Default foreground and background carry no tag.
 
 ## Recording
 
-Pass `record_path` to `tui_start` and the session is written as [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/): output (`o`), input (`i`), resizes (`r`) and exit (`x`), with timestamps taken when the output was produced. The reader runs continuously, so recordings keep real timing even while the agent is idle.
+Pass `record_path` to `tui_start` and the session is written as [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/): output (`o`), input (`i`), resizes (`r`) and exit (`x`, the real exit code, or `128 + signal` for a killed process, e.g. `137` after `tui_end`), with timestamps taken when the output was produced. The reader runs continuously, so recordings keep real timing even while the agent is idle.
 
 ```json
 {"version": 3, "term": {"cols": 155, "rows": 43, "type": "xterm-256color"}, "timestamp": 1726960000, "command": "htop"}
@@ -249,5 +311,4 @@ CI runs the first three on macOS and Linux. Tests spawn real processes; screens 
 
 - macOS and Linux only (no Windows ConPTY).
 - `TERM`/`COLORTERM` aren't set for the child yet, so it inherits them from the MCP host, and terminal queries (cursor position, device attributes, color queries) aren't answered.
-- Recordings currently always end with exit code `0`.
 - Visible screen only; scrollback isn't exposed.

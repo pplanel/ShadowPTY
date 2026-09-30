@@ -1,5 +1,6 @@
 //! MCP Tool Router implementation for `ShadowPTY`.
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use rmcp::{
@@ -10,8 +11,10 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::output::Pattern;
-use crate::pty_manager::{DEFAULT_SESSION_ID, ExpectTarget, Expectation, PtyManager, Script};
+use crate::output::{Pattern, Syntax};
+use crate::pty_manager::{
+    DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, Script,
+};
 
 /// Upper limit for any wait, so a single call can't hang the agent indefinitely.
 const MAX_WAIT_MS: u64 = 120_000;
@@ -33,6 +36,108 @@ fn image_result(base64_data: String, mime_type: impl Into<String>) -> CallToolRe
 
 fn error_result(text: String) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(text)])
+}
+
+/// Most output shown on each side of a match when `include_context` is set.
+const CONTEXT_CHARS: usize = 500;
+
+/// The last `max` characters of `text`.
+fn last_chars(text: &str, max: usize) -> String {
+    let skip = text.chars().count().saturating_sub(max);
+    text.chars().skip(skip).collect()
+}
+
+/// Describes a `tui_expect` match for the model: which pattern, the matched text, where it is on
+/// screen, and (when asked) the output around it.
+fn describe_match(
+    found: &ExpectMatch,
+    sources: &[String],
+    session_id: &str,
+    include_context: bool,
+) -> String {
+    let mut text = if sources.len() == 1 {
+        format!("Matched {:?}", found.matched)
+    } else {
+        format!(
+            "Matched pattern {} of {} ('{}'): {:?}",
+            found.index + 1,
+            sources.len(),
+            sources[found.index],
+            found.matched
+        )
+    };
+    if let Some(line) = &found.line {
+        let _ = write!(text, " on row {}: {:?}", line.row + 1, line.text);
+    }
+    let _ = write!(text, " in session '{session_id}'");
+    if include_context {
+        let before = last_chars(&found.before, CONTEXT_CHARS);
+        if !before.trim().is_empty() {
+            let _ = write!(text, "\nOutput before the match:\n{before}");
+        }
+        let after: String = found.after.chars().take(CONTEXT_CHARS).collect();
+        if !after.trim().is_empty() {
+            let _ = write!(text, "\nOutput after the match (still unread):\n{after}");
+        }
+    }
+    text
+}
+
+/// How a tool's patterns are interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PatternSyntax {
+    /// Matched verbatim (the default).
+    Literal,
+    /// Regular expression.
+    Regex,
+    /// Shell-style glob, matched anywhere in the text: `*` and `?` within a line, `[abc]`,
+    /// `[a-z]`, `[!abc]`; `\\` escapes.
+    Glob,
+}
+
+/// Combines the `syntax` and older `is_regex` parameters. They only conflict when they say
+/// different things about whether the pattern is a regex.
+fn resolve_syntax(syntax: Option<PatternSyntax>, is_regex: Option<bool>) -> Result<Syntax, String> {
+    match (syntax, is_regex) {
+        (Some(PatternSyntax::Regex), Some(false))
+        | (Some(PatternSyntax::Literal | PatternSyntax::Glob), Some(true)) => Err(
+            "`syntax` and `is_regex` disagree; use `syntax` alone (\"literal\", \"regex\" or \"glob\")"
+                .into(),
+        ),
+        (Some(PatternSyntax::Literal), _) | (None, None | Some(false)) => Ok(Syntax::Literal),
+        (Some(PatternSyntax::Regex), _) | (None, Some(true)) => Ok(Syntax::Regex),
+        (Some(PatternSyntax::Glob), _) => Ok(Syntax::Glob),
+    }
+}
+
+/// Patterns given to a tool as `pattern` or `patterns`, with the text the caller wrote.
+struct ToolPatterns {
+    sources: Vec<String>,
+    compiled: Vec<Pattern>,
+}
+
+/// Validates and compiles `pattern` / `patterns` (exactly one must be given). The error is a
+/// message for the tool result.
+fn parse_patterns(
+    pattern: Option<String>,
+    patterns: Option<Vec<String>>,
+    syntax: Syntax,
+) -> Result<ToolPatterns, String> {
+    let sources = match (pattern, patterns) {
+        (Some(pattern), None) => vec![pattern],
+        (None, Some(patterns)) if !patterns.is_empty() => patterns,
+        (Some(_), Some(_)) => return Err("Give either `pattern` or `patterns`, not both".into()),
+        _ => return Err("Give a `pattern` or a non-empty `patterns` list to wait for".into()),
+    };
+    let compiled = sources
+        .iter()
+        .map(|source| {
+            Pattern::with_syntax(source, syntax)
+                .map_err(|e| format!("Invalid pattern '{source}': {e}"))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(ToolPatterns { sources, compiled })
 }
 
 /// Parameters for `tui_start` tool.
@@ -83,14 +188,23 @@ pub struct TuiPasteParams {
 }
 
 /// Parameters for `tui_expect` tool.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TuiExpectParams {
-    /// Substring or regex pattern to wait for.
-    pub pattern: String,
-    /// If true, `pattern` is a regular expression (default false: matched literally).
+    /// Substring or regex pattern to wait for. Give either `pattern` or `patterns`.
+    pub pattern: Option<String>,
+    /// Several patterns: waits for whichever appears first and reports which one it was
+    /// (e.g. `["Password:", "Permission denied", "$ "]`). Give either `pattern` or `patterns`.
+    pub patterns: Option<Vec<String>>,
+    /// How the patterns are read: "literal" (default), "regex" or "glob" (`*`, `?`, `[a-z]`).
+    pub syntax: Option<PatternSyntax>,
+    /// Older form of `syntax: "regex"`: if true, the patterns are regular expressions.
     pub is_regex: Option<bool>,
     /// If true, match against the rendered screen text instead of new output (default false).
+    /// The reply then says which row the match is on.
     pub screen_mode: Option<bool>,
+    /// If true (stream mode), the reply also shows up to 500 characters of output before the
+    /// match and after it (the part after stays unread). Default false.
+    pub include_context: Option<bool>,
     /// Maximum time to wait in milliseconds (default 10000, at most 120000).
     pub timeout_ms: Option<u64>,
     /// Target session identifier (defaults to "default").
@@ -115,7 +229,9 @@ pub struct TuiRunScriptParams {
     pub commands: Vec<String>,
     /// Prompt that the shell prints when a command finishes (default "$").
     pub prompt_pattern: Option<String>,
-    /// If true, `prompt_pattern` is a regular expression (default false).
+    /// How `prompt_pattern` is read: "literal" (default), "regex" or "glob".
+    pub syntax: Option<PatternSyntax>,
+    /// Older form of `syntax: "regex"`: if true, `prompt_pattern` is a regular expression.
     pub is_regex: Option<bool>,
     /// Maximum time to wait for each command's prompt, in milliseconds (default 30000, at most 120000).
     pub timeout_ms: Option<u64>,
@@ -133,6 +249,34 @@ pub struct TuiReadParams {
 /// Parameters for `tui_end` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TuiEndParams {
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Parameters for `tui_wait_gone` tool.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TuiWaitGoneParams {
+    /// Text or regex that should disappear from the screen (e.g. "Loading"). Give either
+    /// `pattern` or `patterns`.
+    pub pattern: Option<String>,
+    /// Several patterns: waits until none of them is on screen. Give either `pattern` or
+    /// `patterns`.
+    pub patterns: Option<Vec<String>>,
+    /// How the patterns are read: "literal" (default), "regex" or "glob" (`*`, `?`, `[a-z]`).
+    pub syntax: Option<PatternSyntax>,
+    /// Older form of `syntax: "regex"`: if true, the patterns are regular expressions.
+    pub is_regex: Option<bool>,
+    /// Maximum time to wait in milliseconds (default 10000, at most 120000).
+    pub timeout_ms: Option<u64>,
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Parameters for `tui_wait_exit` tool.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TuiWaitExitParams {
+    /// Maximum time to wait in milliseconds (default 10000, at most 120000).
+    pub timeout_ms: Option<u64>,
     /// Target session identifier (defaults to "default").
     pub session_id: Option<String>,
 }
@@ -266,24 +410,22 @@ impl ShadowPtyServer {
     /// Waits for a literal or regex pattern in new output or on screen.
     #[tool(
         name = "tui_expect",
-        description = "Waits until a literal or regex pattern appears, instead of sleeping and polling tui_read. By default it searches output that neither tui_read nor an earlier tui_expect has returned yet; with screen_mode it searches the rendered screen text. Fails early if the process exits."
+        description = "Waits until a literal or regex pattern appears, instead of sleeping and polling tui_read. With `patterns`, waits for whichever appears first and says which one matched. By default it searches output that neither tui_read nor an earlier tui_expect has returned yet; with screen_mode it searches the rendered screen text. Fails early if the process exits."
     )]
     pub async fn tui_expect(
         &self,
         Parameters(params): Parameters<TuiExpectParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
-        let pattern = match Pattern::new(&params.pattern, params.is_regex.unwrap_or(false)) {
-            Ok(pattern) => pattern,
-            Err(e) => {
-                return Ok(error_result(format!(
-                    "Invalid pattern '{}': {e}",
-                    params.pattern
-                )));
-            }
-        };
+        let ToolPatterns { sources, compiled } =
+            match resolve_syntax(params.syntax, params.is_regex)
+                .and_then(|syntax| parse_patterns(params.pattern, params.patterns, syntax))
+            {
+                Ok(parsed) => parsed,
+                Err(message) => return Ok(error_result(message)),
+            };
         let expectation = Expectation {
-            pattern,
+            patterns: compiled,
             target: if params.screen_mode.unwrap_or(false) {
                 ExpectTarget::Screen
             } else {
@@ -294,10 +436,81 @@ impl ShadowPtyServer {
 
         Ok(
             match self.manager.expect_session(session_id, &expectation).await {
-                Ok(matched) => {
-                    text_result(format!("Matched {matched:?} in session '{session_id}'"))
-                }
+                Ok(found) => text_result(describe_match(
+                    &found,
+                    &sources,
+                    session_id,
+                    params.include_context.unwrap_or(false),
+                )),
                 Err(e) => error_result(format!("Expect failed: {e:#}")),
+            },
+        )
+    }
+
+    /// Waits until text disappears from the screen.
+    #[tool(
+        name = "tui_wait_gone",
+        description = "Waits until a literal or regex pattern is no longer on the rendered screen, e.g. a spinner or \"Loading...\" message, and reports how long that took. With `patterns`, waits until none of them is on screen. Returns at once if the text isn't showing, so if it may not have appeared yet, wait for it first with tui_expect (screen_mode). Fails early if the process exits with it still on screen."
+    )]
+    pub async fn tui_wait_gone(
+        &self,
+        Parameters(params): Parameters<TuiWaitGoneParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let ToolPatterns { sources, compiled } =
+            match resolve_syntax(params.syntax, params.is_regex)
+                .and_then(|syntax| parse_patterns(params.pattern, params.patterns, syntax))
+            {
+                Ok(parsed) => parsed,
+                Err(message) => return Ok(error_result(message)),
+            };
+        let timeout = wait_duration(params.timeout_ms, 10_000);
+
+        Ok(
+            match self
+                .manager
+                .wait_gone_session(session_id, &compiled, timeout)
+                .await
+            {
+                Ok(elapsed) => {
+                    let what = if sources.len() == 1 {
+                        format!("'{}' is", sources[0])
+                    } else {
+                        format!("{} patterns are", sources.len())
+                    };
+                    text_result(format!(
+                        "{what} no longer on screen in session '{session_id}' (after {} ms)",
+                        elapsed.as_millis()
+                    ))
+                }
+                Err(e) => error_result(format!("Wait gone failed: {e:#}")),
+            },
+        )
+    }
+
+    /// Waits for the process to exit and reports its exit code or signal.
+    #[tool(
+        name = "tui_wait_exit",
+        description = "Waits until the session's process exits and reports how it ended (exit code or signal), plus any output not yet returned by tui_read or tui_expect. Returns immediately if it has already exited. The session stays open for tui_read and screenshots until tui_end."
+    )]
+    pub async fn tui_wait_exit(
+        &self,
+        Parameters(params): Parameters<TuiWaitExitParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let timeout = wait_duration(params.timeout_ms, 10_000);
+
+        Ok(
+            match self.manager.wait_exit_session(session_id, timeout).await {
+                Ok(exit) => {
+                    let mut text = format!("Process in session '{session_id}' {}.", exit.status);
+                    if !exit.output.trim().is_empty() {
+                        text.push_str("\nUnread output:\n");
+                        text.push_str(exit.output.trim_end());
+                    }
+                    text_result(text)
+                }
+                Err(e) => error_result(format!("Wait exit failed: {e:#}")),
             },
         )
     }
@@ -338,7 +551,11 @@ impl ShadowPtyServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
         let prompt_source = params.prompt_pattern.as_deref().unwrap_or("$");
-        let prompt = match Pattern::new(prompt_source, params.is_regex.unwrap_or(false)) {
+        let syntax = match resolve_syntax(params.syntax, params.is_regex) {
+            Ok(syntax) => syntax,
+            Err(message) => return Ok(error_result(message)),
+        };
+        let prompt = match Pattern::with_syntax(prompt_source, syntax) {
             Ok(prompt) => prompt,
             Err(e) => {
                 return Ok(error_result(format!(
@@ -435,7 +652,7 @@ impl ShadowPtyServer {
     /// Lists all currently active pseudo-terminal sessions.
     #[tool(
         name = "tui_list_sessions",
-        description = "Lists all active PTY sessions with their process id, dimensions, and recording state."
+        description = "Lists all active PTY sessions with their process id, dimensions, recording state, and exit_status (null while running, otherwise {\"exit_code\": N}, {\"signal\": N} or \"unknown\")."
     )]
     pub async fn tui_list_sessions(
         &self,
