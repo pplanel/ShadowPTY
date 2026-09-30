@@ -326,7 +326,7 @@ tail -f /tmp/app.jsonl
 tail -f /tmp/app.jsonl | jq -c 'select(.passed == false)'   # failed checks only
 ```
 
-The same events are available in process to anything embedding ShadowPTY, with or without a report file: `PtyManager::subscribe_report_session` returns a `tokio::sync::broadcast` receiver of `ReportEvent`s.
+The same events are available in process to anything embedding ShadowPTY, with or without a report file: `PtyManager::subscribe_report_session` returns a `ReportSubscription` with the events so far (`history`: the `start` entry plus the latest 1000; `dropped` counts older ones left out, and `totals` counts every check) and a `tokio::sync::broadcast` receiver (`live`) for the rest, with nothing missed or repeated in between. A subscriber that falls more than 256 events behind skips the oldest.
 
 ---
 

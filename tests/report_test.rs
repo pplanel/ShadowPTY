@@ -520,10 +520,29 @@ async fn test_subscribers_get_events_without_a_report_file() {
     let manager = PtyManager::new();
     start_interactive_sh(&manager, None).await;
     assert!(manager.subscribe_report_session("nope").await.is_err());
-    let mut events = manager
+    manager
+        .expect(&expectation("READY> ", ExpectTarget::Stream, 5_000))
+        .await
+        .expect("first prompt");
+    let subscription = manager
         .subscribe_report_session("default")
         .await
         .expect("subscribe");
+    // A subscriber that joins mid-session first gets what already happened
+    let history: Vec<&ReportEntry> = subscription.history.iter().map(|e| &e.entry).collect();
+    assert!(
+        matches!(
+            history.as_slice(),
+            [
+                ReportEntry::Start { .. },
+                ReportEntry::Expect { passed: true, .. }
+            ]
+        ),
+        "{history:?}"
+    );
+    assert_eq!(subscription.dropped, 0);
+    assert_eq!(subscription.totals.checks, 1);
+    let mut events = subscription.live;
 
     manager.send_input("echo HI<ENTER>").await.expect("input");
     assert_eq!(
@@ -549,7 +568,7 @@ async fn test_subscribers_get_events_without_a_report_file() {
 
     let stopped = manager.stop_app().await.expect("stop");
     assert_eq!(stopped.report_path, None);
-    assert_eq!(stopped.totals.checks, 1);
+    assert_eq!(stopped.totals.checks, 2);
 
     // A subscriber also gets the end of the session
     assert!(matches!(
@@ -559,8 +578,8 @@ async fn test_subscribers_get_events_without_a_report_file() {
     assert!(matches!(
         next_event(&mut events).await,
         ReportEntry::Summary {
-            checks: 1,
-            passed: 1,
+            checks: 2,
+            passed: 2,
             failed: 0,
             ..
         }

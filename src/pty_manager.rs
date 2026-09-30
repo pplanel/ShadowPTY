@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rustix::process::Signal;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::Mutex;
 
 use crate::output::Pattern;
-pub use crate::report::{ReportEvent, ReportTotals, ScreenshotTaken};
+pub use crate::report::{ReportEvent, ReportSubscription, ReportTotals, ScreenshotTaken};
 use crate::screen::Screen;
 pub use crate::session::{
     DEFAULT_SESSION_ID, ExitStatus, ExpectMatch, ExpectTarget, Expectation, ProcessExit,
@@ -246,11 +246,8 @@ impl PtyManager {
     }
 
     /// Subscribes to the target session's report events (sent whether or not it writes a report
-    /// file). Events from before the call aren't replayed.
-    pub async fn subscribe_report_session(
-        &self,
-        session_id: &str,
-    ) -> Result<broadcast::Receiver<ReportEvent>> {
+    /// file): the events so far, then every new one.
+    pub async fn subscribe_report_session(&self, session_id: &str) -> Result<ReportSubscription> {
         let session = self.get_session(session_id).await?;
         Ok(session.subscribe_report())
     }

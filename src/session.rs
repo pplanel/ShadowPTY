@@ -22,12 +22,12 @@ use rustix::process::{
 use rustix::termios::tcgetpgrp;
 use rustix_openpty::openpty;
 use rustix_openpty::rustix::termios::Winsize;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 
 use crate::input::parse_input_keys;
 use crate::output::{Pattern, SessionOutput, describe_patterns, first_match};
 use crate::recorder::{AsciicastRecorder, SharedRecorder};
-use crate::report::{Outcome, ReportEvent, ReportTotals, ScreenshotTaken, SessionReport};
+use crate::report::{Outcome, ReportSubscription, ReportTotals, ScreenshotTaken, SessionReport};
 use crate::screen::Screen;
 use crate::signals::signal_name;
 
@@ -676,10 +676,10 @@ impl TuiSession {
         self.started
     }
 
-    /// Receives the session's report events from now on, whether or not it writes a report
-    /// file.
+    /// The session's report events so far and a receiver for the rest, whether or not it
+    /// writes a report file.
     #[must_use]
-    pub fn subscribe_report(&self) -> broadcast::Receiver<ReportEvent> {
+    pub fn subscribe_report(&self) -> ReportSubscription {
         self.report.subscribe()
     }
 

@@ -52,6 +52,7 @@ Legend: `[ ]` to do, `[~]` in progress, `[x]` done.
 After Phase 1; see [ROADMAP](./ROADMAP.md#session-report-json).
 
 - [x] Report writer (JSON Lines, flushed per entry) behind a `report_path` on `tui_start` (`src/report.rs`). Every session also broadcasts the same `ReportEvent`s (`TuiSession::subscribe_report`, `PtyManager::subscribe_report_session`), for live viewers.
+- [x] Late subscribers get the history first (`ReportSubscription`: `start` + the latest 1000 events, `dropped`, `totals`, then `live`), so a viewer opened mid-session sees what already happened.
 - [x] Entries: session start (command, args, size, pid), inputs, pastes, resizes, each expectation (patterns, syntax, target, timeout, outcome, elapsed ms, matched text, row), `wait_gone` / `wait_stable` / `wait_exit` / `run_script`, screenshots (format, path, bytes), exit status (written by the reader after the last output, once).
 - [x] Summary entry when the session ends (`tui_end`, replaced id, drop), not at process exit, since checks such as `tui_wait_exit` can follow: checks run, passed, failed, exit status, duration. `tui_end` waits for the status so the file is complete when it returns, and says the totals.
 - [x] Share timing with session metrics (5.2) where they overlap: one `started: Instant` per session (`TuiSession::started`), the report's time base.

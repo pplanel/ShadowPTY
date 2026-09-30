@@ -5,10 +5,15 @@
 //! they are also written to that file, one JSON object per line, flushed after each line so a
 //! crash still leaves a valid report.
 //!
+//! A subscriber first gets the events so far (the `start` entry and the latest
+//! [`MAX_REPORT_HISTORY`]), then every new one, so a live viewer opened mid-session still sees
+//! the whole story.
+//!
 //! A *check* is an entry with a boolean `passed` field (`expect`, `wait_gone`, `wait_stable`,
 //! `wait_exit`, `run_script`). The `summary` entry counts them; it is written once, when the
 //! session ends, after the `exit` entry.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -29,6 +34,10 @@ pub const REPORT_VERSION: u32 = 1;
 
 /// How many events a slow subscriber can fall behind before it misses some.
 const REPORT_CHANNEL_CAPACITY: usize = 256;
+
+/// How many past events (besides `start`) a new subscriber is sent. A failed check's error can
+/// hold a whole screen, so the history is bounded.
+pub const MAX_REPORT_HISTORY: usize = 1000;
 
 /// One line of the report: when it was written and what happened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -194,6 +203,19 @@ impl std::fmt::Display for ReportTotals {
     }
 }
 
+/// The events a session has produced so far, and the channel for the ones still to come.
+#[derive(Debug)]
+pub struct ReportSubscription {
+    /// Past events, oldest first: the `start` entry, then the latest [`MAX_REPORT_HISTORY`].
+    pub history: Vec<ReportEvent>,
+    /// How many events between `start` and the history were dropped to bound it.
+    pub dropped: usize,
+    /// Checks so far, counting dropped ones too.
+    pub totals: ReportTotals,
+    /// Every event after `history`, with none missed or repeated in between.
+    pub live: broadcast::Receiver<ReportEvent>,
+}
+
 /// How a check ended and how long it took.
 #[derive(Debug, Clone, Copy)]
 pub struct Outcome<'a, T> {
@@ -238,6 +260,12 @@ struct ReportState {
     /// The report file, if the session writes one.
     file: Option<File>,
     totals: ReportTotals,
+    /// The `start` event, kept for subscribers whatever the history drops.
+    start: Option<ReportEvent>,
+    /// The latest other events, for subscribers.
+    history: VecDeque<ReportEvent>,
+    /// Events dropped from `history`.
+    dropped: usize,
     /// The status in the `exit` entry, once written.
     exit_status: Option<ExitStatus>,
     exit_written: bool,
@@ -270,6 +298,9 @@ impl SessionReport {
             state: Mutex::new(ReportState {
                 file,
                 totals: ReportTotals::default(),
+                start: None,
+                history: VecDeque::new(),
+                dropped: 0,
                 exit_status: None,
                 exit_written: false,
                 finished: false,
@@ -293,10 +324,24 @@ impl SessionReport {
         self.path.is_some() || self.events.receiver_count() > 0
     }
 
-    /// Receives every event written from now on.
+    /// Returns the events so far and a receiver for the rest. Events are written and
+    /// broadcast under the state lock held here, so none falls between the two.
     #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<ReportEvent> {
-        self.events.subscribe()
+    pub fn subscribe(&self) -> ReportSubscription {
+        let state = self.state();
+        let subscription = ReportSubscription {
+            history: state
+                .start
+                .iter()
+                .chain(state.history.iter())
+                .cloned()
+                .collect(),
+            dropped: state.dropped,
+            totals: state.totals,
+            live: self.events.subscribe(),
+        };
+        drop(state);
+        subscription
     }
 
     /// Checks run so far.
@@ -337,6 +382,15 @@ impl SessionReport {
                 tracing::warn!("stopped writing the session report: {e:#}");
                 state.file = None;
             }
+        }
+        if matches!(event.entry, ReportEntry::Start { .. }) {
+            state.start = Some(event.clone());
+        } else {
+            if state.history.len() == MAX_REPORT_HISTORY {
+                state.history.pop_front();
+                state.dropped += 1;
+            }
+            state.history.push_back(event.clone());
         }
         // No subscribers is fine; a slow one misses old events instead of blocking the writer
         let _ = self.events.send(event);
@@ -578,7 +632,7 @@ mod tests {
     #[test]
     fn test_expect_entry_from_a_screen_match() {
         let report = SessionReport::create(None, Instant::now()).unwrap();
-        let mut events = report.subscribe();
+        let mut events = report.subscribe().live;
         let expectation = Expectation {
             patterns: vec![
                 Pattern::glob("Err*").unwrap(),
@@ -651,7 +705,7 @@ mod tests {
     #[test]
     fn test_finish_writes_exit_then_summary_once() {
         let report = SessionReport::create(None, Instant::now()).unwrap();
-        let mut events = report.subscribe();
+        let mut events = report.subscribe().live;
         report.finish(Some(ExitStatus::Code(0)));
         report.finish(Some(ExitStatus::Code(1)));
         report.record_exit(ExitStatus::Code(2));
@@ -678,9 +732,46 @@ mod tests {
     }
 
     #[test]
+    fn test_late_subscriber_gets_start_and_recent_history() {
+        let report = SessionReport::create(None, Instant::now()).unwrap();
+        let args = ["-c".to_string(), "true".to_string()];
+        report.record_start("s", &PtyConfig::new("sh", &args, 43, 155), Some(1));
+        let failed: Result<()> = Err(anyhow::anyhow!("timed out"));
+        report.record_wait_stable(
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+            &Outcome::new(&failed, Duration::from_secs(1)),
+        );
+        for _ in 0..MAX_REPORT_HISTORY {
+            report.record_input("x", 1);
+        }
+
+        let mut subscription = report.subscribe();
+        assert_eq!(subscription.history.len(), MAX_REPORT_HISTORY + 1);
+        assert!(matches!(
+            subscription.history[0].entry,
+            ReportEntry::Start { .. }
+        ));
+        assert!(matches!(
+            subscription.history[1].entry,
+            ReportEntry::Input { .. }
+        ));
+        // The dropped check still counts
+        assert_eq!(subscription.dropped, 1);
+        assert_eq!(subscription.totals.failed, 1);
+
+        report.record_resize(10, 20);
+        assert_eq!(
+            subscription.live.try_recv().unwrap().entry,
+            ReportEntry::Resize { rows: 10, cols: 20 }
+        );
+        assert!(subscription.live.try_recv().is_err());
+    }
+
+    #[test]
     fn test_exit_is_written_once() {
         let report = SessionReport::create(None, Instant::now()).unwrap();
-        let mut events = report.subscribe();
+        let mut events = report.subscribe().live;
         report.record_exit(ExitStatus::Signal(9));
         report.record_exit(ExitStatus::Signal(9));
         report.finish(None);
