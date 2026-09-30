@@ -1,6 +1,6 @@
 # Roadmap: `rust-expect` API parity
 
-> **Status:** In progress (Phase 1 and the session report done; next: Phase 2)
+> **Status:** In progress (Phase 1 and the session report done; Phase 2 started: 2.1 signals done)
 > **Started:** 2026-09-30
 > **Branch:** `feat/expect-parity`
 > **Tasks:** [TODO.md](./TODO.md)
@@ -28,6 +28,7 @@ We rebuild the features rather than depend on the crate. `rust-expect` only read
 | `wait_screen_not_contains` | `tui_wait_gone` (1.3) |
 | `Pattern::Glob` | `syntax: "glob"` (1.4) |
 | `before` / `after` | `tui_expect` `include_context`; row and line for screen matches (1.5) |
+| `signal`, `send_interrupt`, `send_suspend` | `tui_signal` (2.1) |
 
 ## Principles
 
@@ -68,7 +69,7 @@ A recording shows what happened on screen, not what was *checked*. For TDD and C
 
 | Item | `rust-expect` | Proposed ShadowPTY API |
 | :--- | :--- | :--- |
-| Signals | `signal`, `send_interrupt`, `send_suspend` | New `tui_signal` (`INT`, `TERM`, `TSTP`, `CONT`, `HUP`, `KILL`, …) without ending the session |
+| ✅ Signals | `signal`, `send_interrupt`, `send_suspend` | New `tui_signal` (`INT`, `TERM`, `TSTP`, `CONT`, `HUP`, `KILL`, …) without ending the session |
 | Missing keys | `send_shift_tab`, `send_function_key`, … | `tui_input` tokens: `<SHIFT+TAB>`, `<INSERT>`, and any other gaps |
 | Send a line | `send_line` | `tui_input` gains `line_ending` for text that ends in a newline |
 | Human-like typing | `send_human`, `HumanTyper`, `send_with_delay` | `tui_input` gains `delay_ms` (and optional jitter) between keys |

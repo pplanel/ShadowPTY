@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use rustix::process::Signal;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::output::Pattern;
@@ -16,7 +17,7 @@ use crate::screen::Screen;
 pub use crate::session::{
     DEFAULT_SESSION_ID, ExitStatus, ExpectMatch, ExpectTarget, Expectation, ProcessExit,
     ProcessInfo, PtyConfig, ScreenLine, Script, ScriptOutcome, ScriptStep, SessionSummary,
-    TuiSession,
+    SignalDelivery, SignalTarget, TuiSession,
 };
 
 fn no_session(session_id: &str) -> String {
@@ -118,6 +119,23 @@ impl PtyManager {
     ) -> Result<ExpectMatch> {
         let session = self.get_session(session_id).await?;
         session.expect(expectation).await
+    }
+
+    /// Sends a signal to the target session's process without ending the session.
+    pub async fn signal_session(
+        &self,
+        session_id: &str,
+        signal: Signal,
+        target: SignalTarget,
+    ) -> Result<SignalDelivery> {
+        let session = self.get_session(session_id).await?;
+        session.send_signal(signal, target)
+    }
+
+    /// Sends a signal to the default session's foreground process group.
+    pub async fn signal(&self, signal: Signal) -> Result<SignalDelivery> {
+        self.signal_session(DEFAULT_SESSION_ID, signal, SignalTarget::Foreground)
+            .await
     }
 
     /// Waits for an expectation in the default session.

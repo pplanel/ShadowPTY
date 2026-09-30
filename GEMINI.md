@@ -20,13 +20,14 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 
 ## Architecture
 
-- `src/server.rs`: rmcp tool definitions (13 tools); thin wrappers over `PtyManager`.
+- `src/server.rs`: rmcp tool definitions (14 tools); thin wrappers over `PtyManager`.
 - `src/pty_manager.rs`: `PtyManager`, the map of sessions keyed by `session_id` (default `"default"`).
-- `src/session.rs`: `TuiSession` owns the `alacritty_terminal::tty::Pty`, one alacritty `Term`, a `SessionOutput`, an optional recorder, **one reader thread** (`run_pty_reader`) and a child-exit watcher (`watch_child_exit`, which also publishes the `ExitStatus`). Input, paste, expect, wait-gone, wait-exit, wait-stable, run-script, resize, snapshot and `terminate` live here.
+- `src/session.rs`: `TuiSession` owns the `alacritty_terminal::tty::Pty`, one alacritty `Term`, a `SessionOutput`, an optional recorder, **one reader thread** (`run_pty_reader`) and a child-exit watcher (`watch_child_exit`, which also publishes the `ExitStatus`). Input, paste, signals, expect, wait-gone, wait-exit, wait-stable, run-script, resize, snapshot and `terminate` live here.
 - `src/output.rs`: raw output buffer (bounded, 1 MiB) with a read position and a `watch` revision counter; `Pattern`, stream expect, wait-stable.
 - `src/screen.rs`: `Screen` snapshot copied from the `Term`; tagged text (`tui_read`) and plain text (screen-mode expect).
 - `src/palette.rs`: base palette, app color overrides (OSC 4/10/11/12), dim/inverse/hidden resolution. Shared by text and screenshots.
 - `src/screenshot.rs` (SVG) and `src/rasterizer.rs` (PNG, `fontdue` + embedded JetBrains Mono in `assets/fonts/`).
+- `src/signals.rs`: signal names ↔ platform numbers for `tui_signal` and exit messages.
 - `src/input.rs`: `<ENTER>`, `<UP>`, `<CTRL+C>`, … key tokens to bytes. `src/recorder.rs`: asciicast v3.
 - `src/report.rs`: session report. Every session broadcasts `ReportEvent`s (inputs, checks, screenshots, exit, summary); `report_path` also writes them as JSON Lines. The reader writes the `exit` entry once, after the last output; the `summary` is written once when the session ends (`finish`), never at process exit.
 

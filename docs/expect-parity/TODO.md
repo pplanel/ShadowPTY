@@ -60,8 +60,16 @@ After Phase 1; see [ROADMAP](./ROADMAP.md#session-report-json).
 
 ## Phase 2: Process control and input
 
-- [ ] 2.1 `tui_signal { signal, session_id? }`: named signals to the process group; the session stays open.
-- [ ] 2.2 Key tokens: `<SHIFT+TAB>`, `<INSERT>`; audit `rust-expect`'s `send_*` list against `input.rs`.
+### 2.1 Signals `[x]`
+- [x] `tui_signal { signal, target?, session_id? }`: named signals (platform numbers via `rustix`), to the terminal's foreground process group (`tcgetpgrp`, like Ctrl+C) or only the started process; the session stays open.
+- [x] Recordings get an `m` marker per signal.
+- [x] Exit watcher ignores stops: macOS `waitid(WEXITED)` also reports a stopped child, which marked a `STOP`ped process as exited.
+- [x] Tests (`tests/signal_test.rs`): trapped INT/HUP, TERM ends it, STOP/CONT, foreground job vs shell, tool replies and markers.
+- [x] Docs: reference, README capabilities.
+- [x] Session report `signal` entry (not a check).
+- [x] Crash signals `TRAP`, `BUS`, `FPE` alongside `ABRT` and `SEGV`.
+
+- [ ] 2.2 Key tokens: `<SHIFT+TAB>`, `<INSERT>`, `<CTRL+\>` / `<CTRL+]>` and other non-letter controls (only `CTRL+<letter>` works today); audit `rust-expect`'s `send_*` list against `input.rs`.
 - [ ] 2.3 `tui_input` `line_ending` (`cr`, `lf`, `crlf`).
 - [ ] 2.4 `tui_input` `delay_ms` (+ optional jitter) for human-like typing; recording shows real timing.
 

@@ -21,7 +21,7 @@ use tokio::sync::broadcast;
 use crate::output::{Pattern, Syntax};
 use crate::session::{
     ExitStatus, ExpectMatch, ExpectTarget, Expectation, ProcessExit, PtyConfig, Script,
-    ScriptOutcome,
+    ScriptOutcome, SignalDelivery, SignalTarget,
 };
 
 /// Version of the report format, written in the `start` entry.
@@ -65,6 +65,15 @@ pub enum ReportEntry {
     Paste { text: String, bytes: usize },
     /// The terminal was resized.
     Resize { rows: u16, cols: u16 },
+    /// A signal sent with `tui_signal`.
+    Signal {
+        /// e.g. `"SIGINT"`.
+        signal: String,
+        /// `"foreground"` or `"process"`.
+        target: SignalTarget,
+        /// The process group id (`foreground`) or process id (`process`) it was sent to.
+        id: i32,
+    },
     /// A `tui_expect` check.
     Expect {
         target: ExpectTarget,
@@ -370,6 +379,14 @@ impl SessionReport {
         self.record(ReportEntry::Resize { rows, cols });
     }
 
+    pub fn record_signal(&self, name: &str, delivery: SignalDelivery) {
+        self.record(ReportEntry::Signal {
+            signal: name.to_string(),
+            target: delivery.target,
+            id: delivery.id,
+        });
+    }
+
     pub fn record_expect(&self, expectation: &Expectation, outcome: &Outcome<'_, ExpectMatch>) {
         let found = outcome.result.as_ref().ok();
         self.record(ReportEntry::Expect {
@@ -525,6 +542,17 @@ mod tests {
                 bytes: 3,
             }),
             json!({ "type": "input", "at_ms": 42, "keys": "ls<ENTER>", "bytes": 3 })
+        );
+        assert_eq!(
+            to_json(ReportEntry::Signal {
+                signal: "SIGTERM".to_string(),
+                target: SignalTarget::Foreground,
+                id: 4321,
+            }),
+            json!({
+                "type": "signal", "at_ms": 42, "signal": "SIGTERM", "target": "foreground",
+                "id": 4321
+            })
         );
         assert_eq!(
             to_json(ReportEntry::Exit {

@@ -15,7 +15,7 @@ Tool parameters, screen format, recording format and architecture. For an overvi
 
 ## Tools
 
-ShadowPTY exposes 13 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
+ShadowPTY exposes 14 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
 
 | Tool | What it does |
 | :--- | :--- |
@@ -29,6 +29,7 @@ ShadowPTY exposes 13 tools. Every tool except `tui_list_sessions` takes an optio
 | [`tui_run_script`](#tui_run_script) | Run shell commands one by one, collecting each output |
 | [`tui_read`](#tui_read) | Read the screen as tagged text |
 | [`tui_take_screenshot`](#tui_take_screenshot) | Render the screen to PNG or SVG |
+| [`tui_signal`](#tui_signal) | Send a signal (INT, TERM, HUP, STOP, CONT, …) without ending the session |
 | [`tui_resize`](#tui_resize) | Resize the terminal |
 | [`tui_list_sessions`](#tui_list_sessions) | List sessions and whether their process has exited |
 | [`tui_end`](#tui_end) | Stop a session and its whole process group |
@@ -162,6 +163,31 @@ Renders the current screen from the same emulator state `tui_read` uses, so text
 - PNGs use an embedded JetBrains Mono, so they look the same on every machine; box-drawing characters are drawn so borders join between cells. SVG output is deterministic, so it can be used for golden-file tests.
 - Handles 16/256/truecolor, colors the app redefines (OSC 4/10/11), bold, dim, italic, inverse, hidden, strikethrough, underline styles, wide and combining characters, and the cursor shape.
 
+### `tui_signal`
+
+Sends a signal to the running app without ending the session, e.g. to check that it shuts down cleanly on `TERM`, reloads on `HUP`, or keeps its screen intact across `STOP` / `CONT`.
+
+| Parameter | Type | Default | |
+| :--- | :--- | :--- | :--- |
+| `signal` | string | required | `INT`, `TERM`, `HUP`, `QUIT`, `KILL`, `TSTP`, `STOP`, `CONT`, `USR1`, `USR2`, `WINCH`, `ALRM`, `PIPE`, `TTIN`, `TTOU`, and the crash signals `ABRT`, `SEGV`, `BUS`, `FPE`, `TRAP`; case-insensitive, `SIG` prefix optional |
+| `target` | string | `"foreground"` | `"foreground"`: the terminal's foreground process group, as Ctrl+C does (in a shell, the running job; otherwise the app and its children). `"process"`: only the process `tui_start` launched, e.g. the shell itself |
+| `session_id` | string | `"default"` | |
+
+```json
+{ "signal": "TERM" }
+```
+
+```text
+Sent SIGTERM to the foreground process group (48213) in session 'default'
+```
+
+- The call returns right away; check the effect with `tui_expect` or `tui_wait_exit` (which then reports e.g. `killed by signal 15 (SIGTERM)`).
+- `<CTRL+C>` and `<CTRL+Z>` in `tui_input` go through the terminal, which turns them into signals only while the app leaves keyboard signals on. Full-screen apps in raw mode read them as keys instead; `tui_signal` always delivers.
+- A process that isn't running under a job-control shell ignores `TSTP` unless it handles it (the kernel discards it for a session's own process group); send `STOP` to pause it regardless.
+- The crash signals simulate a crash (by default the process dies, possibly with a core dump), e.g. to test a crash handler or that a supervisor restarts the app. `TRAP` is the breakpoint signal: to break into a program running under `gdb` or `lldb` in the session, send `INT` instead, as Ctrl+C would.
+- Fails if the process has already exited. Signal numbers follow the platform (e.g. `USR1` is 10 on Linux, 30 on macOS).
+- Recordings get a marker event (`m`) named after the signal.
+
 ### `tui_resize`
 
 Resizes the PTY and the screen (`rows`, `cols`), to test how an app re-lays out. Text is re-wrapped like a real terminal.
@@ -232,13 +258,14 @@ Default foreground and background carry no tag.
 
 ## Recording
 
-Pass `record_path` to `tui_start` and the session is written as [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/): output (`o`), input (`i`), resizes (`r`) and exit (`x`, the real exit code, or `128 + signal` for a killed process, e.g. `137` after `tui_end`), with timestamps taken when the output was produced. The reader runs continuously, so recordings keep real timing even while the agent is idle.
+Pass `record_path` to `tui_start` and the session is written as [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/): output (`o`), input (`i`), resizes (`r`), markers (`m`, the name of each signal sent with `tui_signal`) and exit (`x`, the real exit code, or `128 + signal` for a killed process, e.g. `137` after `tui_end`), with timestamps taken when the output was produced. The reader runs continuously, so recordings keep real timing even while the agent is idle.
 
 ```json
 {"version": 3, "term": {"cols": 155, "rows": 43, "type": "xterm-256color"}, "timestamp": 1726960000, "command": "htop"}
 [0.152, "o", "\u001b[?2004h$ "]
 [1.204, "i", "fastfetch\r"]
 [0.342, "r", "120x40"]
+[2.117, "m", "SIGINT"]
 [0.850, "x", "0"]
 ```
 
@@ -278,6 +305,7 @@ Every line has `type` and `at_ms`: milliseconds since the session started, when 
 | `input` | `tui_input` | `keys` as given (e.g. `"ls<ENTER>"`), `bytes` sent |
 | `paste` | `tui_paste` | `text`, `bytes` |
 | `resize` | `tui_resize` | `rows`, `cols` |
+| `signal` | `tui_signal` succeeds | `signal` (e.g. `"SIGINT"`), `target` (`"foreground"` / `"process"`), `id` (the process group or process it was sent to) |
 | `expect` | `tui_expect` ends | `target` (`"stream"` / `"screen"`), `syntax` (`"literal"` / `"regex"` / `"glob"`), `patterns` (as written), `timeout_ms`, `passed`, `elapsed_ms`; on success `pattern_index` (from 0) and `matched`, plus `row` (from 1, screen mode, as in the reply); on failure `error` |
 | `wait_gone` | `tui_wait_gone` ends | `syntax`, `patterns`, `timeout_ms`, `passed`, `elapsed_ms`, `error` |
 | `wait_stable` | `tui_wait_stable` ends | `quiet_period_ms`, `timeout_ms`, `passed`, `elapsed_ms`, `error` |

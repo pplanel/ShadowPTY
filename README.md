@@ -88,6 +88,7 @@ What the assistant "reads" is the screen as text, with colors kept:
 | 📸 **Screenshots** | PNG the assistant can see, or SVG for pixel-exact comparisons |
 | 🎬 **Recordings** | Standard [asciinema](https://asciinema.org) files with real timing |
 | ✅ **Test reports** | A JSON Lines log of every check (passed or failed, and how long it took) and a summary, e.g. `5 checks, 4 passed, 1 failed` |
+| 🚦 **Send signals** | Interrupt, terminate, pause and resume the app (`INT`, `TERM`, `STOP`, `CONT`, …) without closing it |
 | 📐 **Resize** | Test how the app adapts to small and large windows |
 | 🧩 **Several apps at once** | Each in its own named session |
 | 🧹 **Clean shutdown** | Closing a session stops the app and anything it spawned |

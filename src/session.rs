@@ -19,6 +19,7 @@ use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::process::{
     Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process, kill_process_group, waitid,
 };
+use rustix::termios::tcgetpgrp;
 use rustix_openpty::openpty;
 use rustix_openpty::rustix::termios::Winsize;
 use tokio::sync::{broadcast, watch};
@@ -28,6 +29,7 @@ use crate::output::{Pattern, SessionOutput, describe_patterns, first_match};
 use crate::recorder::{AsciicastRecorder, SharedRecorder};
 use crate::report::{Outcome, ReportEvent, ReportTotals, ScreenshotTaken, SessionReport};
 use crate::screen::Screen;
+use crate::signals::signal_name;
 
 /// Session id used when a tool call doesn't specify one.
 pub const DEFAULT_SESSION_ID: &str = "default";
@@ -48,6 +50,9 @@ const EXIT_STATUS_WAIT: Duration = Duration::from_secs(1);
 /// How long an ended session's `Pty` is kept, so the exit watcher can read the killed child's
 /// status before `Pty`'s `Drop` reaps it.
 const REAP_DELAY_LIMIT: Duration = Duration::from_secs(10);
+
+/// How often the exit watcher re-checks a stopped child (macOS reports stops as well as exits).
+const STOPPED_CHILD_POLL: Duration = Duration::from_millis(20);
 
 /// How long `wait_exit` keeps waiting for output to drain after the child exits.
 const EXIT_DRAIN_GRACE: Duration = Duration::from_millis(500);
@@ -124,20 +129,24 @@ impl std::fmt::Display for ExitStatus {
     }
 }
 
-/// Names of common signals whose numbers are the same on Linux and macOS.
-const fn signal_name(signal: i32) -> Option<&'static str> {
-    Some(match signal {
-        1 => "SIGHUP",
-        2 => "SIGINT",
-        3 => "SIGQUIT",
-        6 => "SIGABRT",
-        9 => "SIGKILL",
-        11 => "SIGSEGV",
-        13 => "SIGPIPE",
-        14 => "SIGALRM",
-        15 => "SIGTERM",
-        _ => return None,
-    })
+/// Which processes `send_signal` signals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignalTarget {
+    /// The terminal's foreground process group, as keys like Ctrl+C do: the running job in a
+    /// shell, or the app and its children.
+    #[default]
+    Foreground,
+    /// Only the process the session started (e.g. the shell itself).
+    Process,
+}
+
+/// Where `send_signal` delivered a signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalDelivery {
+    pub target: SignalTarget,
+    /// Process group id for `Foreground`, process id for `Process`.
+    pub id: i32,
 }
 
 /// Result of waiting for the process to exit.
@@ -525,6 +534,12 @@ fn wait_for_child(pid: Pid) -> ExitStatus {
             WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
         ) {
             Err(rustix::io::Errno::INTR) => {}
+            // macOS also reports a stopped child here, although only exits were asked for.
+            // `WNOWAIT` leaves the stop pending, so it would be reported again at once: pause
+            // before asking again
+            Ok(Some(status)) if status.stopped() || status.continued() || status.trapped() => {
+                thread::sleep(STOPPED_CHILD_POLL);
+            }
             Ok(Some(status)) => return ExitStatus::from_waitid(&status),
             // Any other error means the child is gone (e.g. already reaped)
             Ok(None) | Err(_) => return ExitStatus::Unknown,
@@ -762,6 +777,50 @@ impl TuiSession {
         self.write_input(payload.as_bytes())?;
         self.report.record_paste(text, text.len());
         Ok(text.len())
+    }
+
+    /// Sends `signal` without ending the session. Fails if the process has already exited.
+    pub fn send_signal(&self, signal: Signal, target: SignalTarget) -> Result<SignalDelivery> {
+        if let Some(status) = self.exit_status() {
+            anyhow::bail!("the process is no longer running ({status})");
+        }
+        let pid = self
+            .info()
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(Pid::from_raw)
+            .context("the session has no process id")?;
+
+        let id = match target {
+            SignalTarget::Foreground => {
+                // Falls back to the child's own group (it's a session leader) if the terminal
+                // can't tell, e.g. right after spawning
+                let group = tcgetpgrp(&*lock_mutex(&self.pty_writer)).unwrap_or(pid);
+                kill_process_group(group, signal)
+                    .with_context(|| format!("failed to signal process group {group}"))?;
+                group
+            }
+            SignalTarget::Process => {
+                kill_process(pid, signal)
+                    .with_context(|| format!("failed to signal process {pid}"))?;
+                pid
+            }
+        };
+
+        let name =
+            signal_name(signal.as_raw()).unwrap_or_else(|| format!("signal {}", signal.as_raw()));
+        if let Ok(mut rec_guard) = self.recorder.lock()
+            && let Some(rec) = rec_guard.as_mut()
+        {
+            let _ = rec.record_marker(&name);
+        }
+        let delivery = SignalDelivery {
+            target,
+            id: id.as_raw_nonzero().get(),
+        };
+        self.report.record_signal(&name, delivery);
+
+        Ok(delivery)
     }
 
     /// Resizes both the OS pseudo-terminal and the emulated grid.

@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::output::{Pattern, Syntax};
 use crate::pty_manager::{
-    DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, ScreenshotTaken, Script,
+    DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, ScreenshotTaken,
+    Script, SignalTarget,
 };
+use crate::signals::{parse_signal, signal_name};
 
 /// Upper limit for any wait, so a single call can't hang the agent indefinitely.
 const MAX_WAIT_MS: u64 = 120_000;
@@ -167,6 +169,38 @@ pub struct TuiStartParams {
 pub struct TuiInputParams {
     /// String containing keystrokes and symbolic tokens (e.g. "<ENTER>", "<ESC>", "<UP>", "<CTRL+C>").
     pub keys: String,
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Which processes `tui_signal` signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SignalTargetParam {
+    /// The terminal's foreground process group, like Ctrl+C in a real terminal (the default).
+    Foreground,
+    /// Only the process started by `tui_start` (e.g. the shell, not the job it runs).
+    Process,
+}
+
+impl From<SignalTargetParam> for SignalTarget {
+    fn from(target: SignalTargetParam) -> Self {
+        match target {
+            SignalTargetParam::Foreground => Self::Foreground,
+            SignalTargetParam::Process => Self::Process,
+        }
+    }
+}
+
+/// Parameters for `tui_signal` tool.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct TuiSignalParams {
+    /// Signal name, with or without "SIG": INT, TERM, HUP, QUIT, KILL, TSTP, STOP, CONT, USR1,
+    /// USR2, WINCH, ALRM, PIPE, TTIN, TTOU, and the crash signals ABRT, SEGV, BUS, FPE, TRAP.
+    pub signal: String,
+    /// "foreground" (default): the terminal's foreground process group, as Ctrl+C does.
+    /// "process": only the process started by `tui_start`.
+    pub target: Option<SignalTargetParam>,
     /// Target session identifier (defaults to "default").
     pub session_id: Option<String>,
 }
@@ -617,6 +651,46 @@ impl ShadowPtyServer {
                 error_result(report)
             }
         })
+    }
+
+    /// Sends a signal to the session's process without ending the session.
+    #[tool(
+        name = "tui_signal",
+        description = "Sends a signal (INT, TERM, HUP, TSTP, STOP, CONT, USR1, KILL, ...) to the running app without ending the session, e.g. to test that it shuts down cleanly on TERM or reloads on HUP. By default it goes to the terminal's foreground process group, like Ctrl+C would; target \"process\" signals only the process tui_start launched. Unlike <CTRL+C> in tui_input, it works even when the app has turned off keyboard signals (raw mode). Follow up with tui_expect or tui_wait_exit to check the effect."
+    )]
+    pub async fn tui_signal(
+        &self,
+        Parameters(params): Parameters<TuiSignalParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let signal = match parse_signal(&params.signal) {
+            Ok(signal) => signal,
+            Err(e) => return Ok(error_result(format!("{e:#}"))),
+        };
+        let target = params
+            .target
+            .map_or(SignalTarget::Foreground, SignalTarget::from);
+        let name =
+            signal_name(signal.as_raw()).unwrap_or_else(|| format!("signal {}", signal.as_raw()));
+
+        Ok(
+            match self
+                .manager
+                .signal_session(session_id, signal, target)
+                .await
+            {
+                Ok(delivery) => {
+                    let whom = match delivery.target {
+                        SignalTarget::Foreground => {
+                            format!("the foreground process group ({})", delivery.id)
+                        }
+                        SignalTarget::Process => format!("process {}", delivery.id),
+                    };
+                    text_result(format!("Sent {name} to {whom} in session '{session_id}'"))
+                }
+                Err(e) => error_result(format!("Failed to send {name}: {e:#}")),
+            },
+        )
     }
 
     /// Resizes the pseudo-terminal window and updates screen parser dimensions.

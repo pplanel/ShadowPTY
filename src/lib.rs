@@ -9,6 +9,7 @@ pub mod screen;
 pub mod screenshot;
 pub mod server;
 pub mod session;
+pub mod signals;
 
 // Backwards-compatibility re-exports
 pub mod formatter {
