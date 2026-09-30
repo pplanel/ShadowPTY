@@ -6,40 +6,48 @@
 <link rel="icon" href="data:,">
 <title>ShadowPTY live</title>
 <style>
+  /* Tokens. Text colors meet WCAG 2.2 AA (>= 4.5:1) on their surfaces; --line is decoration only. */
   :root {
     color-scheme: light dark;
     --bg: #f5f5f4;
-    --panel: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #fafaf9;
     --fg: #1c1917;
     --muted: #57534e;
-    --faint: #a8a29e;
-    --border: #e7e5e4;
+    --line: #e7e5e4;
     --pass: #15803d;
     --pass-bg: #dcfce7;
     --fail: #b91c1c;
     --fail-bg: #fee2e2;
     --accent: #1d4ed8;
     --accent-bg: #dbeafe;
-    --neutral-bg: #f5f5f4;
-    --term-frame: #1c1917;
+    --chip-bg: #f5f5f4;
+    --live: #dc2626;
+    --term-chrome: #1c1917;
+    --term-chrome-fg: #d6d3d1;
+    --term-bg: #111111;
+    --radius: 10px;
+    --gap: 16px;
     --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0c0a09;
-      --panel: #1c1917;
+      --surface: #1c1917;
+      --surface-2: #171412;
       --fg: #e7e5e4;
       --muted: #a8a29e;
-      --faint: #78716c;
-      --border: #292524;
+      --line: #2e2a27;
       --pass: #4ade80;
-      --pass-bg: #14532d;
-      --fail: #f87171;
-      --fail-bg: #7f1d1d;
+      --pass-bg: #123d24;
+      --fail: #fca5a5;
+      --fail-bg: #4c1414;
       --accent: #93c5fd;
-      --accent-bg: #1e3a8a;
-      --neutral-bg: #292524;
-      --term-frame: #292524;
+      --accent-bg: #1e3a5f;
+      --chip-bg: #292524;
+      --live: #f87171;
+      --term-chrome: #292524;
     }
   }
   * { box-sizing: border-box; }
@@ -48,126 +56,188 @@
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    font: 14px/1.45 var(--sans);
     display: flex;
     flex-direction: column;
   }
+  button { font: inherit; color: inherit; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Header: who and what, and whether it's still going */
   header {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px 20px;
-    padding: 10px 16px;
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
+    gap: 8px 16px;
+    padding: 10px var(--gap);
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
   }
-  .ident { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 280px; }
-  .brand { color: var(--faint); font-weight: 600; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
-  #session { font-weight: 700; font-size: 16px; white-space: nowrap; }
+  .ident { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 320px; }
+  .brand { color: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
+  #session { font-weight: 700; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
   #command { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .pill {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 12px;
-    background: var(--neutral-bg); color: var(--muted); white-space: nowrap;
+    padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 12px;
+    background: var(--chip-bg); color: var(--muted); white-space: nowrap;
   }
   .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
   .pill.running { background: var(--pass-bg); color: var(--pass); }
   .pill.running::before { animation: pulse 1.4s ease-in-out infinite; }
   .pill.failed { background: var(--fail-bg); color: var(--fail); }
   @keyframes pulse { 50% { opacity: .25; } }
-  @media (prefers-reduced-motion: reduce) { .pill.running::before { animation: none; } }
-  .metrics { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; }
-  .metrics div { display: flex; gap: 6px; align-items: baseline; }
-  .metrics dt { color: var(--muted); font-size: 12px; }
-  .metrics dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
-  #passed { color: var(--pass); }
-  #failed.nonzero { color: var(--fail); }
-  #connection { font-size: 12px; color: var(--faint); white-space: nowrap; }
-  #connection.down { color: var(--fail); }
+
   main {
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 2.2fr) minmax(300px, 1fr);
-    gap: 16px;
-    padding: 16px;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+    gap: var(--gap);
+    padding: var(--gap);
   }
-  .screen {
-    background: var(--term-frame);
-    border-radius: 10px;
-    padding: 10px;
-    align-self: start;
-    min-width: 0;
-  }
-  .screen img { display: block; width: 100%; height: auto; border-radius: 4px; }
-  .screen .placeholder { color: #a8a29e; font-family: var(--mono); font-size: 13px; padding: 40px 16px; text-align: center; }
-  .screen .caption { color: #a8a29e; font-size: 12px; margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; }
-  aside {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    max-height: calc(100vh - 110px);
-  }
-  aside h2 { font-size: 13px; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-  aside h2 button { font: inherit; font-size: 12px; font-weight: 500; border: 1px solid var(--border); background: transparent; color: var(--accent); border-radius: 6px; padding: 1px 8px; cursor: pointer; }
-  #summary { display: none; margin: 10px 14px 0; padding: 10px 12px; border-radius: 8px; font-weight: 600; }
+  .stage { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+
+  /* The terminal: the thing being watched, so it gets the room */
+  .terminal { background: var(--term-chrome); border-radius: var(--radius); overflow: hidden; box-shadow: 0 1px 2px rgb(0 0 0 / .12), 0 8px 24px rgb(0 0 0 / .12); }
+  .terminal .bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; color: var(--term-chrome-fg); font-size: 12px; }
+  .terminal .bar .title { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .terminal .bar .size { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 11px; letter-spacing: .06em; background: rgb(255 255 255 / .08); color: var(--term-chrome-fg); white-space: nowrap; }
+  .badge.live { background: #dc2626; color: #fff; }
+  .badge.live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #fff; animation: pulse 1.4s ease-in-out infinite; }
+  .badge.offline { background: #7f1d1d; color: #fff; }
+  .viewport { position: relative; background: var(--term-bg); display: flex; justify-content: center; align-items: center; min-height: 180px; padding: 8px 10px; }
+  .viewport img { display: block; width: 100%; height: auto; max-height: calc(100vh - 250px); object-fit: contain; transition: filter .3s, opacity .3s; }
+  .viewport .placeholder { color: #d6d3d1; font-family: var(--mono); font-size: 13px; padding: 48px 16px; text-align: center; }
+  .terminal.ended .viewport img { filter: saturate(.5); opacity: .7; }
+  .ended-note { display: none; position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; background: rgb(28 25 23 / .92); color: #fafaf9; font-size: 13px; font-weight: 600; box-shadow: 0 4px 16px rgb(0 0 0 / .3); white-space: nowrap; }
+  .terminal.ended .ended-note { display: block; }
+
+  /* What the agent did last */
+  .latest { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 10px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .latest .label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .latest .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .latest .what.pass { color: var(--pass); }
+  .latest .what.fail { color: var(--fail); }
+  .latest .ago { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .latest code { font-family: var(--mono); font-size: 12px; }
+
+  /* Side panel: verdict, then the timeline */
+  aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .verdict { padding: 14px; }
+  .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0; }
+  .counts div { display: flex; flex-direction: column; }
+  .counts dt { font-size: 12px; color: var(--muted); }
+  .counts dd { margin: 0; font-size: 26px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+  #passed { color: var(--pass); }
+  #failed.nonzero { color: var(--fail); }
+  .meter { display: flex; height: 8px; margin: 12px 0 10px; border-radius: 999px; overflow: hidden; background: var(--chip-bg); }
+  .meter span { display: block; height: 100%; }
+  #meter-pass { background: var(--pass); width: 0; }
+  #meter-fail { background: var(--fail); width: 0; }
+  .facts { display: flex; gap: 18px; font-size: 12px; color: var(--muted); }
+  .facts b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  #summary { display: none; padding: 10px 14px; border-radius: var(--radius); font-weight: 600; }
   #summary.shown { display: block; }
   #summary.pass { background: var(--pass-bg); color: var(--pass); }
   #summary.fail { background: var(--fail-bg); color: var(--fail); }
+
+  .log { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+  .log-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .log-head h2 { font-size: 13px; margin: 0; }
+  .filters { display: inline-flex; gap: 2px; padding: 2px; background: var(--chip-bg); border-radius: 8px; }
+  .filters button { border: 0; background: transparent; padding: 2px 9px; border-radius: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
+  .filters button[aria-pressed="true"] { background: var(--surface); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+  .filters .n { font-variant-numeric: tabular-nums; opacity: .8; margin-left: 3px; }
+  #follow { border: 1px solid var(--line); background: var(--surface); color: var(--accent); border-radius: 6px; padding: 2px 10px; font-size: 12px; cursor: pointer; margin: 8px 14px 0; align-self: flex-end; }
   #timeline { list-style: none; margin: 0; padding: 6px 0; overflow-y: auto; flex: 1; }
-  #timeline .empty { color: var(--faint); padding: 12px 14px; }
-  .event { display: grid; grid-template-columns: 58px 104px minmax(0, 1fr); gap: 2px 8px; padding: 5px 14px; border-left: 3px solid transparent; }
+  #timeline .empty { color: var(--muted); padding: 14px; }
+  #timeline[data-filter="checks"] > .event:not([data-check]),
+  #timeline[data-filter="failures"] > .event:not([data-fail]),
+  #timeline[data-filter="inputs"] > .event:not([data-input]) { display: none; }
+  .event { display: grid; grid-template-columns: 52px 100px minmax(0, 1fr); gap: 2px 8px; padding: 6px 14px; border-left: 3px solid transparent; }
   .event.pass { border-left-color: var(--pass); }
-  .event.fail { border-left-color: var(--fail); background: color-mix(in srgb, var(--fail-bg) 45%, transparent); }
-  .event .at { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; padding-top: 1px; }
+  .event.fail { border-left-color: var(--fail); background: color-mix(in srgb, var(--fail-bg) 50%, transparent); }
+  .event .at { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; padding-top: 1px; }
   .event .kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); padding-top: 2px; white-space: nowrap; }
   .event.pass .kind { color: var(--pass); }
   .event.fail .kind { color: var(--fail); }
   .event.input .kind { color: var(--accent); }
   .event .text { overflow-wrap: anywhere; }
-  .event code { font-family: var(--mono); font-size: 12px; background: var(--neutral-bg); padding: 0 4px; border-radius: 4px; }
+  .event code { font-family: var(--mono); font-size: 12px; background: var(--chip-bg); padding: 0 4px; border-radius: 4px; }
   .event .detail { grid-column: 3; color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); margin: 0; max-height: 9em; overflow-y: auto; }
   .event.fail .detail { color: var(--fail); }
-  @media (max-width: 900px) {
+
+  @media (prefers-reduced-motion: reduce) {
+    .pill.running::before, .badge.live::before { animation: none; }
+    .viewport img { transition: none; }
+  }
+  @media (max-width: 960px) {
     /* One column, and the page scrolls instead of the timeline */
     html, body { height: auto; }
     main { grid-template-columns: minmax(0, 1fr); min-height: auto; }
-    aside { max-height: none; }
+    .viewport img { max-height: none; }
     #timeline { overflow: visible; }
-    aside h2 button { display: none; }
+    #follow { display: none !important; }
+    #session { max-width: 60vw; }
   }
 </style>
 </head>
 <body>
 <header>
   <div class="ident">
-    <span class="brand">ShadowPTY live</span>
+    <span class="brand">ShadowPTY</span>
     <span id="session">…</span>
     <span id="command"></span>
   </div>
-  <span id="state" class="pill">connecting</span>
-  <dl class="metrics">
-    <div><dt>Checks</dt><dd id="checks">0</dd></div>
-    <div><dt>Passed</dt><dd id="passed">0</dd></div>
-    <div><dt>Failed</dt><dd id="failed">0</dd></div>
-    <div><dt>Elapsed</dt><dd id="elapsed">–</dd></div>
-    <div><dt>Frames</dt><dd id="fps">0/s</dd></div>
-  </dl>
-  <span id="connection">connecting…</span>
+  <span id="state" class="pill" role="status" aria-live="polite">connecting</span>
 </header>
 <main>
-  <section class="screen" aria-label="Terminal screen">
-    <div id="placeholder" class="placeholder">Waiting for the first frame…</div>
-    <img id="frame" alt="Live terminal screen" hidden>
-    <div class="caption"><span id="size"></span><span>view-only · same screen the agent reads</span></div>
+  <section class="stage" aria-label="Live screen">
+    <div id="terminal" class="terminal">
+      <div class="bar">
+        <span id="connection" class="badge">CONNECTING</span>
+        <span id="title" class="title"></span>
+        <span id="size" class="size"></span>
+      </div>
+      <div class="viewport">
+        <div id="placeholder" class="placeholder">Waiting for the first frame…</div>
+        <img id="frame" alt="Live terminal screen, the same one the agent reads" hidden>
+        <div id="ended-note" class="ended-note"></div>
+      </div>
+    </div>
+    <div class="latest" aria-live="polite">
+      <span class="label">Latest</span>
+      <span id="latest" class="what">Waiting for the agent's first action…</span>
+      <span id="latest-ago" class="ago"></span>
+    </div>
   </section>
-  <aside aria-label="Timeline">
-    <h2><span>Timeline <span id="count" style="color:var(--faint);font-weight:500"></span></span><button id="follow" type="button" hidden>Jump to latest</button></h2>
-    <div id="summary" role="status"></div>
-    <ol id="timeline"><li class="empty">Inputs, checks and screenshots appear here as the agent works.</li></ol>
+  <aside aria-label="Checks and timeline">
+    <section class="card verdict" aria-label="Checks">
+      <dl class="counts">
+        <div><dt>Passed</dt><dd id="passed">0</dd></div>
+        <div><dt>Failed</dt><dd id="failed">0</dd></div>
+        <div><dt>Checks</dt><dd id="checks">0</dd></div>
+      </dl>
+      <div class="meter" role="img" id="meter" aria-label="No checks yet"><span id="meter-pass"></span><span id="meter-fail"></span></div>
+      <div class="facts"><span>Elapsed <b id="elapsed">–</b></span><span>Frames <b id="fps">0/s</b></span><span>View-only</span></div>
+    </section>
+    <div id="summary" role="status" aria-live="polite"></div>
+    <section class="card log" aria-label="Timeline">
+      <div class="log-head">
+        <h2>Timeline</h2>
+        <div class="filters" role="group" aria-label="Show">
+          <button type="button" data-filter="all" aria-pressed="true">All<span class="n" id="n-all"></span></button>
+          <button type="button" data-filter="checks" aria-pressed="false">Checks<span class="n" id="n-checks"></span></button>
+          <button type="button" data-filter="failures" aria-pressed="false">Failures<span class="n" id="n-failures"></span></button>
+          <button type="button" data-filter="inputs" aria-pressed="false">Inputs<span class="n" id="n-inputs"></span></button>
+        </div>
+      </div>
+      <button id="follow" type="button" hidden>↓ Jump to latest</button>
+      <ol id="timeline" data-filter="all"></ol>
+    </section>
   </aside>
 </main>
 <script>
@@ -320,23 +390,39 @@ const sessionId = match ? decodeURIComponent(match[1]) : "";
 $("session").textContent = sessionId;
 document.title = sessionId + " · ShadowPTY live";
 
+const EMPTY_TEXT = "Inputs, checks and screenshots appear here as the agent works.";
 let counters = newCounters();
+let tally = { all: 0, checks: 0, failures: 0, inputs: 0 };
 let status = null;
+let connected = false;
 let frameUrl = null;
 let frameTimes = [];
 let following = true;
-let eventCount = 0;
+let lastEventAt = null;
 const timeline = $("timeline");
+
+function clock(ms) {
+  const s = ms / 1000;
+  const m = Math.floor(s / 60);
+  return m + ":" + (s % 60).toFixed(1).padStart(4, "0");
+}
+
+function showEmpty() {
+  const empty = document.createElement("li");
+  empty.className = "empty";
+  empty.textContent = EMPTY_TEXT;
+  timeline.replaceChildren(empty);
+}
 
 function resetTimeline() {
   counters = newCounters();
-  eventCount = 0;
-  timeline.replaceChildren();
-  const empty = document.createElement("li");
-  empty.className = "empty";
-  empty.textContent = "Inputs, checks and screenshots appear here as the agent works.";
-  timeline.append(empty);
+  tally = { all: 0, checks: 0, failures: 0, inputs: 0 };
+  lastEventAt = null;
+  showEmpty();
   $("summary").className = "";
+  $("latest").textContent = "Waiting for the agent's first action…";
+  $("latest").className = "what";
+  $("latest-ago").textContent = "";
   renderCounters();
 }
 
@@ -345,20 +431,27 @@ function renderCounters() {
   $("passed").textContent = counters.passed;
   $("failed").textContent = counters.failed;
   $("failed").className = counters.failed > 0 ? "nonzero" : "";
-  $("count").textContent = eventCount ? "(" + eventCount + ")" : "";
+  const total = counters.passed + counters.failed;
+  $("meter-pass").style.width = total ? (100 * counters.passed / total) + "%" : "0";
+  $("meter-fail").style.width = total ? (100 * counters.failed / total) + "%" : "0";
+  $("meter").setAttribute("aria-label", total ? counters.passed + " of " + total + " checks passed" : "No checks yet");
+  for (const key of Object.keys(tally)) $("n-" + key).textContent = tally[key] ? tally[key] : "";
 }
 
 function addEvent(ev) {
   const d = describeEvent(ev);
   applyCounters(counters, ev);
-  eventCount += 1;
-  if (eventCount === 1) timeline.replaceChildren();
+  if (tally.all === 0) timeline.replaceChildren();
+  tally.all += 1;
 
   const li = document.createElement("li");
   li.className = "event " + (d.tone === "fail-soft" ? "" : d.tone);
+  if ("passed" in ev && ev.type !== "summary") { li.dataset.check = ""; tally.checks += 1; }
+  if (d.tone === "fail" || d.tone === "fail-soft") { li.dataset.fail = ""; tally.failures += 1; }
+  if (d.tone === "input") { li.dataset.input = ""; tally.inputs += 1; }
   const at = document.createElement("span");
   at.className = "at";
-  at.textContent = typeof ev.at_ms === "number" ? "+" + (ev.at_ms / 1000).toFixed(2) + "s" : "";
+  at.textContent = typeof ev.at_ms === "number" ? clock(ev.at_ms) : "";
   const kind = document.createElement("span");
   kind.className = "kind";
   kind.textContent = (d.tone === "pass" ? "✓ " : d.tone === "fail" ? "✗ " : "") + d.kind;
@@ -379,9 +472,19 @@ function addEvent(ev) {
   }
   timeline.append(li);
 
+  const latest = $("latest");
+  latest.replaceChildren(d.text);
+  if (d.code) {
+    const code = document.createElement("code");
+    code.textContent = " " + d.code;
+    latest.append(code);
+  }
+  latest.className = "what" + (d.tone === "pass" || d.tone === "fail" ? " " + d.tone : "");
+  lastEventAt = Date.now();
+
   if (ev.type === "summary") {
     const summary = $("summary");
-    summary.textContent = "Summary: " + d.text;
+    summary.textContent = (ev.failed > 0 ? "✗ " : "✓ ") + d.text;
     summary.className = "shown " + (ev.failed > 0 ? "fail" : "pass");
   }
   renderCounters();
@@ -397,19 +500,44 @@ $("follow").addEventListener("click", () => {
   timeline.scrollTop = timeline.scrollHeight;
   $("follow").hidden = true;
 });
+for (const button of document.querySelectorAll(".filters button")) {
+  button.addEventListener("click", () => {
+    for (const other of document.querySelectorAll(".filters button")) other.setAttribute("aria-pressed", String(other === button));
+    timeline.dataset.filter = button.dataset.filter;
+  });
+}
 
 function renderStatus() {
   if (!status) return;
   $("command").textContent = status.command;
   $("command").title = status.command;
+  $("title").textContent = status.command;
   const pill = $("state");
-  if (status.state === "running") {
+  const running = status.state === "running";
+  const exit = formatExit(status.exit_status);
+  if (running) {
     pill.textContent = "running";
     pill.className = "pill running";
   } else {
-    const exit = formatExit(status.exit_status);
     pill.textContent = status.state === "closed" ? "ended · " + exit : exit;
     pill.className = "pill" + (exitFailed(status.exit_status) ? " failed" : "");
+  }
+  $("terminal").classList.toggle("ended", !running);
+  $("ended-note").textContent = (status.state === "closed" ? "Session ended · " : "Process ") + exit + " · final screen";
+  renderConnection();
+}
+
+function renderConnection() {
+  const badge = $("connection");
+  if (!connected) {
+    badge.textContent = "OFFLINE";
+    badge.className = "badge offline";
+  } else if (status && status.state !== "running") {
+    badge.textContent = "ENDED";
+    badge.className = "badge";
+  } else {
+    badge.textContent = "LIVE";
+    badge.className = "badge live";
   }
 }
 
@@ -418,11 +546,15 @@ function tick() {
     const end = status.ended_ms || Date.now();
     const s = Math.max(0, (end - status.started_ms) / 1000);
     const m = Math.floor(s / 60);
-    $("elapsed").textContent = m > 0 ? m + "m " + (s % 60).toFixed(0).padStart(2, "0") + "s" : s.toFixed(1) + " s";
+    $("elapsed").textContent = m > 0 ? m + "m " + String(Math.floor(s % 60)).padStart(2, "0") + "s" : s.toFixed(1) + " s";
   }
   const now = performance.now();
   frameTimes = frameTimes.filter((t) => now - t < 1000);
   $("fps").textContent = frameTimes.length + "/s";
+  if (lastEventAt !== null) {
+    const ago = Math.round((Date.now() - lastEventAt) / 1000);
+    $("latest-ago").textContent = ago < 2 ? "just now" : ago < 60 ? ago + " s ago" : Math.floor(ago / 60) + " min ago";
+  }
 }
 setInterval(tick, 250);
 
@@ -436,20 +568,16 @@ function showFrame(frame) {
   img.src = url;
   img.hidden = false;
   $("placeholder").hidden = true;
-  $("size").textContent = frame.rows + " rows × " + frame.cols + " cols";
-}
-
-function setConnection(text, down) {
-  $("connection").textContent = text;
-  $("connection").className = down ? "down" : "";
+  $("size").textContent = frame.cols + "×" + frame.rows;
 }
 
 function connect() {
   const source = new EventSource("/s/" + encodeURIComponent(sessionId) + "/events?t=" + encodeURIComponent(token));
   // Every connection starts with the full history, so start the timeline over
   source.addEventListener("open", () => {
+    connected = true;
     resetTimeline();
-    setConnection("● live", false);
+    renderConnection();
   });
   source.addEventListener("status", (e) => {
     status = JSON.parse(e.data);
@@ -459,17 +587,22 @@ function connect() {
   source.addEventListener("frame", (e) => showFrame(JSON.parse(e.data)));
   source.addEventListener("report", (e) => addEvent(JSON.parse(e.data)));
   source.addEventListener("error", () => {
+    connected = false;
+    renderConnection();
     if (source.readyState === EventSource.CLOSED) {
-      setConnection("session not available", true);
+      $("state").textContent = "not available";
+      $("state").className = "pill failed";
       if (!status) $("placeholder").textContent = "This session isn't being shown live. Check the link, or start the session again with live: true.";
-    } else {
-      setConnection("reconnecting…", true);
     }
   });
 }
 
+showEmpty();
 if (sessionId && token) connect();
-else setConnection("missing session or token in the link", true);
+else {
+  $("state").textContent = "bad link";
+  $("placeholder").textContent = "The link is missing the session or its token. Use the link from tui_start.";
+}
 </script>
 </body>
 </html>

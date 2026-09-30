@@ -350,7 +350,7 @@ The same events are available in process to anything embedding ShadowPTY, with o
 
 The server starts on the first `live: true` and is shared by every session of that MCP server; it stops with the MCP server. `PORT` is picked by the OS and `TOKEN` is new each time. When a session ends (its process exits, or `tui_end`), its page keeps the final screen and timeline until the id is reused or the server stops. Starting the id again with `live: true` switches the open page to the new session; starting it without `live` takes it off the viewer.
 
-**Page.** One self-contained HTML file (no external scripts, styles or fonts), light and dark. The header shows the session id, command line, status (`running`, `exited with code N`, `killed by signal N`, `ended`), checks / passed / failed, elapsed time and frames per second. It reconnects by itself (`EventSource`) and replays the timeline on reconnect.
+**Page.** One self-contained HTML file (no external scripts, styles or fonts), light and dark, one column on narrow screens. The terminal takes most of the page, in a window with a `LIVE` / `ENDED` / `OFFLINE` badge; an ended session's final screen is dimmed and labelled with how it ended. Under it, **Latest** shows the agent's last action. The side panel has the verdict (passed, failed, checks, a pass/fail bar, elapsed time, frames per second), the summary once it arrives, and the timeline with filters (All, Checks, Failures, Inputs). The header shows the session id, command line and status (`running`, `exited with code N`, `killed by signal N`, `ended · …`). It reconnects by itself (`EventSource`) and replays the timeline on reconnect.
 
 **Events.** Server-sent events (`text/event-stream`), each with one line of JSON data:
 
