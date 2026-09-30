@@ -29,7 +29,19 @@ pub enum WaitError {
     Eof,
 }
 
-/// A literal string or regular expression to wait for.
+/// How a pattern's text is interpreted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Syntax {
+    /// Matched verbatim.
+    #[default]
+    Literal,
+    /// A regular expression (Rust `regex` syntax).
+    Regex,
+    /// A shell-style glob: `*` and `?` within a line, `[abc]`, `[a-z]`, `[!abc]`, `\\` escapes.
+    Glob,
+}
+
+/// A literal string, regular expression or glob to wait for.
 #[derive(Debug, Clone)]
 pub struct Pattern {
     source: String,
@@ -53,12 +65,34 @@ impl Pattern {
         })
     }
 
+    /// Compiles a shell-style glob. Like `rust-expect`, it matches anywhere in the text rather
+    /// than the whole of it. `*` (any characters) and `?` (one character) stay within a line, so
+    /// `Error:*` matches the rest of the error line instead of everything after it.
+    pub fn glob(pattern: &str) -> Result<Self, regex::Error> {
+        Ok(Self {
+            source: pattern.to_string(),
+            regex: Regex::new(&glob_to_regex(pattern))?,
+        })
+    }
+
     /// Builds a literal or regex pattern, as selected by a tool's `is_regex` flag.
     pub fn new(pattern: &str, is_regex: bool) -> Result<Self, regex::Error> {
-        if is_regex {
-            Self::regex(pattern)
-        } else {
-            Self::literal(pattern)
+        Self::with_syntax(
+            pattern,
+            if is_regex {
+                Syntax::Regex
+            } else {
+                Syntax::Literal
+            },
+        )
+    }
+
+    /// Builds a pattern in the given syntax.
+    pub fn with_syntax(pattern: &str, syntax: Syntax) -> Result<Self, regex::Error> {
+        match syntax {
+            Syntax::Literal => Self::literal(pattern),
+            Syntax::Regex => Self::regex(pattern),
+            Syntax::Glob => Self::glob(pattern),
         }
     }
 
@@ -75,6 +109,61 @@ impl Pattern {
             .find(text.as_bytes())
             .map(|m| String::from_utf8_lossy(m.as_bytes()).into_owned())
     }
+}
+
+/// Translates a glob into a regex. An unclosed `[` is taken literally.
+fn glob_to_regex(glob: &str) -> String {
+    let chars: Vec<char> = glob.chars().collect();
+    let mut regex = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' => regex.push_str("[^\\n]*"),
+            '?' => regex.push_str("[^\\n]"),
+            '\\' if i + 1 < chars.len() => {
+                i += 1;
+                regex.push_str(&regex::escape(&chars[i].to_string()));
+            }
+            '[' => match glob_class(&chars[i + 1..]) {
+                Some((class, consumed)) => {
+                    regex.push_str(&class);
+                    i += consumed;
+                }
+                None => regex.push_str("\\["),
+            },
+            c => regex.push_str(&regex::escape(&c.to_string())),
+        }
+        i += 1;
+    }
+    regex
+}
+
+/// Parses a glob character class after its `[`. Returns the regex class and how many
+/// characters it used, including the closing `]`; `None` if it isn't closed.
+fn glob_class(rest: &[char]) -> Option<(String, usize)> {
+    let mut class = String::from("[");
+    let mut i = 0;
+    if matches!(rest.first(), Some('!' | '^')) {
+        class.push('^');
+        i += 1;
+    }
+    // A `]` right after the opening bracket is part of the class
+    let first = i;
+    while i < rest.len() {
+        match rest[i] {
+            ']' if i > first => {
+                class.push(']');
+                return Some((class, i + 1));
+            }
+            '\\' | '[' | ']' | '&' | '~' => {
+                class.push('\\');
+                class.push(rest[i]);
+            }
+            c => class.push(c),
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Finds the pattern whose first match starts earliest in `haystack`; on a tie, the one listed
@@ -360,6 +449,42 @@ mod tests {
                 .await,
             Err(WaitError::Timeout(Duration::from_millis(10)))
         );
+    }
+
+    fn glob_finds(glob: &str, text: &str) -> Option<String> {
+        Pattern::glob(glob).unwrap().find_in(text)
+    }
+
+    #[test]
+    fn test_glob_wildcards_match_anywhere_within_a_line() {
+        assert_eq!(
+            glob_finds("Error:*", "ok\nError: disk full\nnext"),
+            Some("Error: disk full".to_string())
+        );
+        assert_eq!(
+            glob_finds("v?.?", "running v2.4 now"),
+            Some("v2.4".to_string())
+        );
+        // `*` doesn't cross lines
+        assert_eq!(glob_finds("Build*done", "Build started\ndone"), None);
+    }
+
+    #[test]
+    fn test_glob_classes_and_escapes() {
+        assert_eq!(
+            glob_finds("*[Ee]rror*", "fatal error here"),
+            Some("fatal error here".to_string())
+        );
+        assert_eq!(glob_finds("[0-9][0-9]%", "at 42%"), Some("42%".to_string()));
+        assert_eq!(glob_finds("[!0-9]x", "1x ax"), Some("ax".to_string()));
+        assert_eq!(glob_finds("[]]", "a]b"), Some("]".to_string()));
+        assert_eq!(
+            glob_finds("\\*.txt", "file *.txt"),
+            Some("*.txt".to_string())
+        );
+        assert_eq!(glob_finds("a.b", "axb"), None, "dot is literal");
+        // An unclosed bracket is literal
+        assert_eq!(glob_finds("[abc", "x[abc"), Some("[abc".to_string()));
     }
 
     #[tokio::test]

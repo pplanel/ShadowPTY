@@ -272,6 +272,7 @@ async fn test_expect_and_script_tools() {
         .tui_expect(Parameters(TuiExpectParams {
             pattern: Some("([".to_string()),
             patterns: None,
+            syntax: None,
             is_regex: Some(true),
             screen_mode: None,
             timeout_ms: Some(100),
@@ -285,6 +286,7 @@ async fn test_expect_and_script_tools() {
         .tui_run_script(Parameters(TuiRunScriptParams {
             commands: vec!["echo tool-output".to_string()],
             prompt_pattern: Some("READY> ".to_string()),
+            syntax: None,
             is_regex: None,
             timeout_ms: Some(5_000),
             session_id: None,
@@ -569,5 +571,86 @@ async fn test_wait_gone_tool() {
         .await
         .expect("tool call ok");
     assert!(invalid.is_error.unwrap_or(false));
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_glob_patterns_in_tools() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{
+        PatternSyntax, ShadowPtyServer, TuiExpectParams, TuiRunScriptParams, TuiWaitGoneParams,
+    };
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    start_interactive_sh(&manager).await;
+
+    // Stream expect: `*` stops at the end of the line
+    manager
+        .send_input("printf 'Build finished: 3 warnings\\nnext line\\n'<ENTER>")
+        .await
+        .expect("send");
+    let matched = server
+        .tui_expect(Parameters(TuiExpectParams {
+            pattern: Some("Build*: ? warnings".to_string()),
+            syntax: Some(PatternSyntax::Glob),
+            timeout_ms: Some(5_000),
+            ..TuiExpectParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    let text = serde_json::to_string(&matched.content).expect("serialize");
+    assert!(
+        !matched.is_error.unwrap_or(false) && text.contains("Build finished: 3 warnings"),
+        "{text}"
+    );
+
+    // Glob prompt for run_script
+    let script = server
+        .tui_run_script(Parameters(TuiRunScriptParams {
+            commands: vec!["echo glob-ok".to_string()],
+            prompt_pattern: Some("[A-Z]*> ".to_string()),
+            syntax: Some(PatternSyntax::Glob),
+            is_regex: None,
+            timeout_ms: Some(5_000),
+            session_id: None,
+        }))
+        .await
+        .expect("tool call ok");
+    let text = serde_json::to_string(&script.content).expect("serialize");
+    assert!(
+        !script.is_error.unwrap_or(false) && text.contains("glob-ok"),
+        "{text}"
+    );
+
+    // Glob in wait_gone: nothing like "Loading 42%" is on screen
+    let gone = server
+        .tui_wait_gone(Parameters(TuiWaitGoneParams {
+            pattern: Some("Loading [0-9]*%".to_string()),
+            syntax: Some(PatternSyntax::Glob),
+            timeout_ms: Some(1_000),
+            ..TuiWaitGoneParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    assert!(!gone.is_error.unwrap_or(false));
+
+    // `syntax` and `is_regex` can't contradict each other
+    let conflict = server
+        .tui_expect(Parameters(TuiExpectParams {
+            pattern: Some("x".to_string()),
+            syntax: Some(PatternSyntax::Glob),
+            is_regex: Some(true),
+            timeout_ms: Some(100),
+            ..TuiExpectParams::default()
+        }))
+        .await
+        .expect("tool call ok");
+    let text = serde_json::to_string(&conflict.content).expect("serialize");
+    assert!(
+        conflict.is_error.unwrap_or(false) && text.contains("disagree"),
+        "{text}"
+    );
+
     manager.stop_app().await.expect("stop");
 }

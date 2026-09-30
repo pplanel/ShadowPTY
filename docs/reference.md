@@ -3,6 +3,7 @@
 Tool parameters, screen format, recording format and architecture. For an overview, see the [README](../README.md).
 
 - [Tools](#tools)
+- [Pattern syntax](#pattern-syntax)
 - [Reading the screen](#reading-the-screen)
 - [Recording](#recording)
 - [Architecture](#architecture)
@@ -76,7 +77,8 @@ Waits until `pattern` appears, or the first of several `patterns`, so the agent 
 | :--- | :--- | :--- | :--- |
 | `pattern` | string | – | Text or regex. Give `pattern` or `patterns` |
 | `patterns` | string[] | – | Several; waits for whichever appears first |
-| `is_regex` | boolean | `false` | Applies to every pattern |
+| `syntax` | `"literal"` \| `"regex"` \| `"glob"` | `"literal"` | Applies to every pattern; see [Pattern syntax](#pattern-syntax) |
+| `is_regex` | boolean | `false` | Older form of `syntax: "regex"` |
 | `screen_mode` | boolean | `false` | Match the rendered screen instead of new output |
 | `timeout_ms` | integer | `10000` | |
 
@@ -86,7 +88,7 @@ Waits until `pattern` appears, or the first of several `patterns`, so the agent 
 - If the process exits first, it fails right away and returns the last output.
 
 ```json
-{ "pattern": "Build (succeeded|failed)", "is_regex": true, "timeout_ms": 60000 }
+{ "pattern": "Build (succeeded|failed)", "syntax": "regex", "timeout_ms": 60000 }
 ```
 
 ```json
@@ -99,7 +101,7 @@ Waits until no output has arrived for `quiet_period_ms` (default `100`), up to `
 
 ### `tui_wait_gone`
 
-Waits until text is no longer on the rendered screen, e.g. a spinner, `Loading…` or a modal, and reports how long that took. Takes `pattern` or `patterns` (then waits until none of them shows), `is_regex`, and `timeout_ms` (default `10000`).
+Waits until text is no longer on the rendered screen, e.g. a spinner, `Loading…` or a modal, and reports how long that took. Takes `pattern` or `patterns` (then waits until none of them shows), `syntax` (see [Pattern syntax](#pattern-syntax)), and `timeout_ms` (default `10000`).
 
 ```json
 { "pattern": "Loading", "timeout_ms": 30000 }
@@ -126,7 +128,7 @@ A process killed by a signal reports e.g. `killed by signal 9 (SIGKILL)`. If it'
 
 ### `tui_run_script`
 
-Runs `commands` one at a time in a shell session, waiting for `prompt_pattern` (default `"$"`, set `is_regex` for a regex) after each, with `timeout_ms` (default `30000`) per command. Returns each command's output. Earlier output is ignored and each command's echo is skipped, so a command that contains the prompt text doesn't end its own wait. Stops at the first command whose prompt doesn't show up.
+Runs `commands` one at a time in a shell session, waiting for `prompt_pattern` (default `"$"`; `syntax` sets how it's read, see [Pattern syntax](#pattern-syntax)) after each, with `timeout_ms` (default `30000`) per command. Returns each command's output. Earlier output is ignored and each command's echo is skipped, so a command that contains the prompt text doesn't end its own wait. Stops at the first command whose prompt doesn't show up.
 
 ```json
 { "commands": ["cargo build", "cargo test"], "prompt_pattern": "READY> " }
@@ -172,6 +174,27 @@ Resizes the PTY and the screen (`rows`, `cols`), to test how an app re-lays out.
 ### `tui_end`
 
 Stops a session: kills its whole process group (so background children don't leak), reaps the process and closes its recording.
+
+---
+
+## Pattern syntax
+
+`tui_expect`, `tui_wait_gone` and `tui_run_script` read their patterns according to `syntax`:
+
+| `syntax` | Meaning | Example |
+| :--- | :--- | :--- |
+| `"literal"` (default) | The exact text | `"Permission denied"` |
+| `"regex"` | A [Rust regular expression](https://docs.rs/regex/latest/regex/#syntax) | `"Build (succeeded\|failed)"` |
+| `"glob"` | A shell-style wildcard pattern | `"Error:*"`, `"*[Ee]rror*"`, `"v?.?"` |
+
+Globs match **anywhere** in the text, not the whole of it, like `rust-expect`:
+
+- `*` matches any characters and `?` one character, **within a line**, so `Error:*` matches the rest of the error line instead of all output after it;
+- `[abc]`, `[a-z]` and `[!abc]` (or `[^abc]`) match one character from, or not from, a set;
+- `\` makes the next character literal (`\*`), and an unclosed `[` is literal;
+- everything else, including `.`, matches itself.
+
+`is_regex: true` is the older way to say `syntax: "regex"` and still works. A call that sets both and contradicts itself (e.g. `syntax: "glob"` with `is_regex: true`) is rejected.
 
 ---
 

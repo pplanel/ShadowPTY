@@ -10,7 +10,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::output::Pattern;
+use crate::output::{Pattern, Syntax};
 use crate::pty_manager::{DEFAULT_SESSION_ID, ExpectTarget, Expectation, PtyManager, Script};
 
 /// Upper limit for any wait, so a single call can't hang the agent indefinitely.
@@ -35,6 +35,34 @@ fn error_result(text: String) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(text)])
 }
 
+/// How a tool's patterns are interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PatternSyntax {
+    /// Matched verbatim (the default).
+    Literal,
+    /// Regular expression.
+    Regex,
+    /// Shell-style glob, matched anywhere in the text: `*` and `?` within a line, `[abc]`,
+    /// `[a-z]`, `[!abc]`; `\\` escapes.
+    Glob,
+}
+
+/// Combines the `syntax` and older `is_regex` parameters. They only conflict when they say
+/// different things about whether the pattern is a regex.
+fn resolve_syntax(syntax: Option<PatternSyntax>, is_regex: Option<bool>) -> Result<Syntax, String> {
+    match (syntax, is_regex) {
+        (Some(PatternSyntax::Regex), Some(false))
+        | (Some(PatternSyntax::Literal | PatternSyntax::Glob), Some(true)) => Err(
+            "`syntax` and `is_regex` disagree; use `syntax` alone (\"literal\", \"regex\" or \"glob\")"
+                .into(),
+        ),
+        (Some(PatternSyntax::Literal), _) | (None, None | Some(false)) => Ok(Syntax::Literal),
+        (Some(PatternSyntax::Regex), _) | (None, Some(true)) => Ok(Syntax::Regex),
+        (Some(PatternSyntax::Glob), _) => Ok(Syntax::Glob),
+    }
+}
+
 /// Patterns given to a tool as `pattern` or `patterns`, with the text the caller wrote.
 struct ToolPatterns {
     sources: Vec<String>,
@@ -46,7 +74,7 @@ struct ToolPatterns {
 fn parse_patterns(
     pattern: Option<String>,
     patterns: Option<Vec<String>>,
-    is_regex: Option<bool>,
+    syntax: Syntax,
 ) -> Result<ToolPatterns, String> {
     let sources = match (pattern, patterns) {
         (Some(pattern), None) => vec![pattern],
@@ -57,7 +85,7 @@ fn parse_patterns(
     let compiled = sources
         .iter()
         .map(|source| {
-            Pattern::new(source, is_regex.unwrap_or(false))
+            Pattern::with_syntax(source, syntax)
                 .map_err(|e| format!("Invalid pattern '{source}': {e}"))
         })
         .collect::<Result<_, _>>()?;
@@ -119,7 +147,9 @@ pub struct TuiExpectParams {
     /// Several patterns: waits for whichever appears first and reports which one it was
     /// (e.g. `["Password:", "Permission denied", "$ "]`). Give either `pattern` or `patterns`.
     pub patterns: Option<Vec<String>>,
-    /// If true, the patterns are regular expressions (default false: matched literally).
+    /// How the patterns are read: "literal" (default), "regex" or "glob" (`*`, `?`, `[a-z]`).
+    pub syntax: Option<PatternSyntax>,
+    /// Older form of `syntax: "regex"`: if true, the patterns are regular expressions.
     pub is_regex: Option<bool>,
     /// If true, match against the rendered screen text instead of new output (default false).
     pub screen_mode: Option<bool>,
@@ -147,7 +177,9 @@ pub struct TuiRunScriptParams {
     pub commands: Vec<String>,
     /// Prompt that the shell prints when a command finishes (default "$").
     pub prompt_pattern: Option<String>,
-    /// If true, `prompt_pattern` is a regular expression (default false).
+    /// How `prompt_pattern` is read: "literal" (default), "regex" or "glob".
+    pub syntax: Option<PatternSyntax>,
+    /// Older form of `syntax: "regex"`: if true, `prompt_pattern` is a regular expression.
     pub is_regex: Option<bool>,
     /// Maximum time to wait for each command's prompt, in milliseconds (default 30000, at most 120000).
     pub timeout_ms: Option<u64>,
@@ -178,7 +210,9 @@ pub struct TuiWaitGoneParams {
     /// Several patterns: waits until none of them is on screen. Give either `pattern` or
     /// `patterns`.
     pub patterns: Option<Vec<String>>,
-    /// If true, the patterns are regular expressions (default false: matched literally).
+    /// How the patterns are read: "literal" (default), "regex" or "glob" (`*`, `?`, `[a-z]`).
+    pub syntax: Option<PatternSyntax>,
+    /// Older form of `syntax: "regex"`: if true, the patterns are regular expressions.
     pub is_regex: Option<bool>,
     /// Maximum time to wait in milliseconds (default 10000, at most 120000).
     pub timeout_ms: Option<u64>,
@@ -332,7 +366,9 @@ impl ShadowPtyServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
         let ToolPatterns { sources, compiled } =
-            match parse_patterns(params.pattern, params.patterns, params.is_regex) {
+            match resolve_syntax(params.syntax, params.is_regex)
+                .and_then(|syntax| parse_patterns(params.pattern, params.patterns, syntax))
+            {
                 Ok(parsed) => parsed,
                 Err(message) => return Ok(error_result(message)),
             };
@@ -375,7 +411,9 @@ impl ShadowPtyServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
         let ToolPatterns { sources, compiled } =
-            match parse_patterns(params.pattern, params.patterns, params.is_regex) {
+            match resolve_syntax(params.syntax, params.is_regex)
+                .and_then(|syntax| parse_patterns(params.pattern, params.patterns, syntax))
+            {
                 Ok(parsed) => parsed,
                 Err(message) => return Ok(error_result(message)),
             };
@@ -466,7 +504,11 @@ impl ShadowPtyServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
         let prompt_source = params.prompt_pattern.as_deref().unwrap_or("$");
-        let prompt = match Pattern::new(prompt_source, params.is_regex.unwrap_or(false)) {
+        let syntax = match resolve_syntax(params.syntax, params.is_regex) {
+            Ok(syntax) => syntax,
+            Err(message) => return Ok(error_result(message)),
+        };
+        let prompt = match Pattern::with_syntax(prompt_source, syntax) {
             Ok(prompt) => prompt,
             Err(e) => {
                 return Ok(error_result(format!(

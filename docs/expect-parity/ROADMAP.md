@@ -26,6 +26,7 @@ We rebuild the features rather than depend on the crate. `rust-expect` only read
 | `expect_eof`, `wait`, `wait_timeout`, `is_running` | `tui_wait_exit`, `exit_status` in `tui_list_sessions` (1.1) |
 | `expect_any` | `tui_expect` with `patterns` (1.2) |
 | `wait_screen_not_contains` | `tui_wait_gone` (1.3) |
+| `Pattern::Glob` | `syntax: "glob"` (1.4) |
 
 ## Principles
 
@@ -46,7 +47,7 @@ The waits testers need most.
 | ✅ Wait for exit, exit status | `expect_eof`, `wait`, `wait_timeout`, `is_running` | New `tui_wait_exit` returns exit code or signal and unread output; `tui_list_sessions` shows `exit_status`; recordings log the real exit code |
 | ✅ First of several patterns | `expect_any` | `tui_expect` gains `patterns` (array); result says which one matched |
 | ✅ Wait for text to disappear | `wait_screen_not_contains` | New `tui_wait_gone` (screen), e.g. spinners, "Loading…" |
-| Glob patterns | `Pattern::Glob` | `tui_expect` gains `syntax: "literal" \| "regex" \| "glob"` (`is_regex` kept) |
+| ✅ Glob patterns | `Pattern::Glob` | `tui_expect` gains `syntax: "literal" \| "regex" \| "glob"` (`is_regex` kept) |
 | Text around the match | `before` / `after` | `tui_expect` returns `before` and `after` as well as `matched` |
 
 ### Session report (JSON)
@@ -105,7 +106,7 @@ A recording shows what happened on screen, not what was *checked*. For TDD and C
 
 1. **Tool count vs. parameters.** Phase 3 adds several options to `tui_read`. Is one flexible `tui_read` better for agents than separate `tui_find` / `tui_read_region` tools?
 2. ~~**`tui_expect` result format.**~~ Resolved 2026-09-30: tool results stay human-like text (with the matched pattern's number, and `before` / `after` text when 1.5 lands); structured results go to the [session report](#session-report-json). See Principles.
-3. **Glob vs. `is_regex`.** Replace `is_regex` with `syntax`, or keep both?
+3. ~~**Glob vs. `is_regex`.**~~ Resolved 2026-09-30: added `syntax` (`literal` / `regex` / `glob`) and kept `is_regex` as the older form; a call where they contradict each other is rejected.
 4. **SSH.** In scope for a PTY-focused MCP server?
 
 ## Done when

@@ -34,10 +34,11 @@ Legend: `[ ]` to do, `[~]` in progress, `[x]` done.
 - [x] Tests: spinner that clears, already absent, never clears (timeout, shows screen), process exits with text showing, tool.
 - [x] Docs: reference, README; tool description warns to wait for the text to appear first (a test hit that race).
 
-### 1.4 Glob patterns `[ ]`
-- [ ] `Pattern::glob` (`*`, `?`, `[...]`) compiled to a regex.
-- [ ] `syntax` parameter on `tui_expect`, `tui_wait_gone`, `tui_run_script`; `is_regex` still accepted.
-- [ ] Tests: glob matching, conflicting `syntax` + `is_regex`.
+### 1.4 Glob patterns `[x]`
+- [x] `Pattern::glob`: `*` / `?` within a line, `[abc]`, `[a-z]`, `[!abc]`, `\` escapes; matches anywhere (like `rust-expect`, whose glob lacks the `[...]` classes its own built-in patterns use).
+- [x] `syntax` parameter on `tui_expect`, `tui_wait_gone`, `tui_run_script`; `is_regex` still accepted; contradictions rejected (ROADMAP open question 3).
+- [x] Tests: glob rules (`output.rs`), glob in all three tools and the conflict error (`tests/expect_test.rs`).
+- [x] Docs: reference "Pattern syntax" section.
 
 ### 1.5 Text around the match `[ ]`
 - [x] Decide the result format (ROADMAP open question 2): text in the tool reply; structured data in the session report.
