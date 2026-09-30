@@ -20,6 +20,9 @@ use tokio::time::Instant;
 /// Maximum raw output kept for stream matching; older bytes are dropped.
 const MAX_BUFFER_BYTES: usize = 1 << 20;
 
+/// How much raw output after a match is turned into `StreamMatch::after`.
+const AFTER_WINDOW_BYTES: usize = 4096;
+
 /// Why a wait ended without its condition being met.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum WaitError {
@@ -190,13 +193,16 @@ pub fn describe_patterns(patterns: &[Pattern]) -> String {
     }
 }
 
-/// A stream match: the matched text and the unread output before it, both as plain text.
+/// A stream match: the matched text and the unread output around it, all as plain text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamMatch {
     /// Which of the patterns matched (always 0 for a single pattern).
     pub index: usize,
     pub matched: String,
+    /// Unread output before the match (now consumed).
     pub before: String,
+    /// Output right after the match (from at most 4096 bytes of it), still unread.
+    pub after: String,
 }
 
 struct OutputState {
@@ -348,10 +354,12 @@ impl SessionOutput {
             let mut state = self.state();
             let unread = state.unread();
             let (index, range) = first_match(patterns, unread)?;
+            let after_end = unread.len().min(range.end + AFTER_WINDOW_BYTES);
             let result = StreamMatch {
                 index,
                 matched: plain_text(&unread[range.clone()]),
                 before: plain_text(&unread[..range.start]),
+                after: plain_text(&unread[range.end..after_end]),
             };
             state.read_pos += range.end;
             drop(state);
@@ -500,6 +508,8 @@ mod tests {
         assert_eq!(found.index, 1);
         assert_eq!(found.matched, "Permission denied");
         assert_eq!(found.before, "login: ");
+        // `after` is reported but stays unread
+        assert_eq!(found.after, "\nPassword: ");
 
         // Only output up to the winning match was consumed
         let next = output

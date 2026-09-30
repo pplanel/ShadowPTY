@@ -170,12 +170,27 @@ impl Expectation {
     }
 }
 
-/// Which pattern an expectation matched, and the matched text.
+/// Which pattern an expectation matched, the matched text, and where it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectMatch {
     /// Index into `Expectation::patterns`.
     pub index: usize,
     pub matched: String,
+    /// Stream mode: unread output before the match (now consumed). Empty in screen mode.
+    pub before: String,
+    /// Stream mode: output right after the match, still unread. Empty in screen mode.
+    pub after: String,
+    /// Screen mode: the row where the match starts.
+    pub line: Option<ScreenLine>,
+}
+
+/// A row of the rendered screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenLine {
+    /// 0-based row index.
+    pub row: usize,
+    /// The row's text, trailing spaces trimmed.
+    pub text: String,
 }
 
 /// Shell commands for `run_script`, and the prompt that follows each.
@@ -745,10 +760,18 @@ impl TuiSession {
                 .output
                 .wait_for(*timeout, || {
                     let text = self.screen_text();
-                    let (index, range) = first_match(patterns, text.as_bytes())?;
+                    let bytes = text.as_bytes();
+                    let (index, range) = first_match(patterns, bytes)?;
+                    let row = bytes[..range.start].split(|&b| b == b'\n').count() - 1;
                     Some(ExpectMatch {
                         index,
-                        matched: String::from_utf8_lossy(&text.as_bytes()[range]).into_owned(),
+                        matched: String::from_utf8_lossy(&bytes[range]).into_owned(),
+                        before: String::new(),
+                        after: String::new(),
+                        line: Some(ScreenLine {
+                            row,
+                            text: text.split('\n').nth(row).unwrap_or_default().to_string(),
+                        }),
                     })
                 })
                 .await
@@ -762,6 +785,9 @@ impl TuiSession {
                 Ok(found) => Ok(ExpectMatch {
                     index: found.index,
                     matched: found.matched,
+                    before: found.before,
+                    after: found.after,
+                    line: None,
                 }),
                 Err(e) => Err(anyhow::anyhow!(
                     "{described} not found in output: {e}. Unread output (last {ERROR_TAIL_CHARS} chars):\n{}",

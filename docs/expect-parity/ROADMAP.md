@@ -1,6 +1,6 @@
 # Roadmap: `rust-expect` API parity
 
-> **Status:** In progress (Phase 1)
+> **Status:** In progress (Phase 1 done; next: session report, then Phase 2)
 > **Started:** 2026-09-30
 > **Branch:** `feat/expect-parity`
 > **Tasks:** [TODO.md](./TODO.md)
@@ -27,6 +27,7 @@ We rebuild the features rather than depend on the crate. `rust-expect` only read
 | `expect_any` | `tui_expect` with `patterns` (1.2) |
 | `wait_screen_not_contains` | `tui_wait_gone` (1.3) |
 | `Pattern::Glob` | `syntax: "glob"` (1.4) |
+| `before` / `after` | `tui_expect` `include_context`; row and line for screen matches (1.5) |
 
 ## Principles
 
@@ -48,7 +49,7 @@ The waits testers need most.
 | ✅ First of several patterns | `expect_any` | `tui_expect` gains `patterns` (array); result says which one matched |
 | ✅ Wait for text to disappear | `wait_screen_not_contains` | New `tui_wait_gone` (screen), e.g. spinners, "Loading…" |
 | ✅ Glob patterns | `Pattern::Glob` | `tui_expect` gains `syntax: "literal" \| "regex" \| "glob"` (`is_regex` kept) |
-| Text around the match | `before` / `after` | `tui_expect` returns `before` and `after` as well as `matched` |
+| ✅ Text around the match | `before` / `after` | `tui_expect` returns `before` and `after` as well as `matched` |
 
 ### Session report (JSON)
 

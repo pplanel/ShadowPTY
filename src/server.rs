@@ -1,5 +1,6 @@
 //! MCP Tool Router implementation for `ShadowPTY`.
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use rmcp::{
@@ -11,7 +12,9 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::output::{Pattern, Syntax};
-use crate::pty_manager::{DEFAULT_SESSION_ID, ExpectTarget, Expectation, PtyManager, Script};
+use crate::pty_manager::{
+    DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, Script,
+};
 
 /// Upper limit for any wait, so a single call can't hang the agent indefinitely.
 const MAX_WAIT_MS: u64 = 120_000;
@@ -33,6 +36,51 @@ fn image_result(base64_data: String, mime_type: impl Into<String>) -> CallToolRe
 
 fn error_result(text: String) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(text)])
+}
+
+/// Most output shown on each side of a match when `include_context` is set.
+const CONTEXT_CHARS: usize = 500;
+
+/// The last `max` characters of `text`.
+fn last_chars(text: &str, max: usize) -> String {
+    let skip = text.chars().count().saturating_sub(max);
+    text.chars().skip(skip).collect()
+}
+
+/// Describes a `tui_expect` match for the model: which pattern, the matched text, where it is on
+/// screen, and (when asked) the output around it.
+fn describe_match(
+    found: &ExpectMatch,
+    sources: &[String],
+    session_id: &str,
+    include_context: bool,
+) -> String {
+    let mut text = if sources.len() == 1 {
+        format!("Matched {:?}", found.matched)
+    } else {
+        format!(
+            "Matched pattern {} of {} ('{}'): {:?}",
+            found.index + 1,
+            sources.len(),
+            sources[found.index],
+            found.matched
+        )
+    };
+    if let Some(line) = &found.line {
+        let _ = write!(text, " on row {}: {:?}", line.row + 1, line.text);
+    }
+    let _ = write!(text, " in session '{session_id}'");
+    if include_context {
+        let before = last_chars(&found.before, CONTEXT_CHARS);
+        if !before.trim().is_empty() {
+            let _ = write!(text, "\nOutput before the match:\n{before}");
+        }
+        let after: String = found.after.chars().take(CONTEXT_CHARS).collect();
+        if !after.trim().is_empty() {
+            let _ = write!(text, "\nOutput after the match (still unread):\n{after}");
+        }
+    }
+    text
 }
 
 /// How a tool's patterns are interpreted.
@@ -152,7 +200,11 @@ pub struct TuiExpectParams {
     /// Older form of `syntax: "regex"`: if true, the patterns are regular expressions.
     pub is_regex: Option<bool>,
     /// If true, match against the rendered screen text instead of new output (default false).
+    /// The reply then says which row the match is on.
     pub screen_mode: Option<bool>,
+    /// If true (stream mode), the reply also shows up to 500 characters of output before the
+    /// match and after it (the part after stays unread). Default false.
+    pub include_context: Option<bool>,
     /// Maximum time to wait in milliseconds (default 10000, at most 120000).
     pub timeout_ms: Option<u64>,
     /// Target session identifier (defaults to "default").
@@ -384,16 +436,11 @@ impl ShadowPtyServer {
 
         Ok(
             match self.manager.expect_session(session_id, &expectation).await {
-                Ok(found) if sources.len() == 1 => text_result(format!(
-                    "Matched {:?} in session '{session_id}'",
-                    found.matched
-                )),
-                Ok(found) => text_result(format!(
-                    "Matched pattern {} of {} ('{}'): {:?} in session '{session_id}'",
-                    found.index + 1,
-                    sources.len(),
-                    sources[found.index],
-                    found.matched
+                Ok(found) => text_result(describe_match(
+                    &found,
+                    &sources,
+                    session_id,
+                    params.include_context.unwrap_or(false),
                 )),
                 Err(e) => error_result(format!("Expect failed: {e:#}")),
             },

@@ -14,7 +14,8 @@ use crate::output::Pattern;
 use crate::screen::Screen;
 pub use crate::session::{
     DEFAULT_SESSION_ID, ExitStatus, ExpectMatch, ExpectTarget, Expectation, ProcessExit,
-    ProcessInfo, PtyConfig, Script, ScriptOutcome, ScriptStep, SessionSummary, TuiSession,
+    ProcessInfo, PtyConfig, ScreenLine, Script, ScriptOutcome, ScriptStep, SessionSummary,
+    TuiSession,
 };
 
 fn no_session(session_id: &str) -> String {

@@ -80,11 +80,13 @@ Waits until `pattern` appears, or the first of several `patterns`, so the agent 
 | `syntax` | `"literal"` \| `"regex"` \| `"glob"` | `"literal"` | Applies to every pattern; see [Pattern syntax](#pattern-syntax) |
 | `is_regex` | boolean | `false` | Older form of `syntax: "regex"` |
 | `screen_mode` | boolean | `false` | Match the rendered screen instead of new output |
+| `include_context` | boolean | `false` | Stream mode: also show output before and after the match |
 | `timeout_ms` | integer | `10000` | |
 
 - **Stream mode** (default) searches output the agent hasn't seen yet — neither returned by `tui_read` nor matched by an earlier `tui_expect` — so it never matches stale text. A match consumes output up to its end.
 - **Screen mode** matches what is actually drawn, including text built from cursor moves and overwrites.
 - With `patterns`, the match that starts earliest wins (if two start at the same place, the one listed first). Only output up to that match is consumed. The reply names the winner, numbered from 1, e.g. `Matched pattern 2 of 3 ('Permission denied'): "Permission denied"`.
+- **The reply** names what matched. In screen mode it also gives the row (from 1) and the full line, e.g. `Matched "READY" on row 3: "Status: READY" in session 'default'`. In stream mode, `include_context: true` adds up to 500 characters of output before the match and after it; the part after stays unread, so a later `tui_expect` can still match it.
 - If the process exits first, it fails right away and returns the last output.
 
 ```json

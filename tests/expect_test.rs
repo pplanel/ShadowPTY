@@ -275,6 +275,7 @@ async fn test_expect_and_script_tools() {
             syntax: None,
             is_regex: Some(true),
             screen_mode: None,
+            include_context: None,
             timeout_ms: Some(100),
             session_id: None,
         }))
@@ -652,5 +653,85 @@ async fn test_glob_patterns_in_tools() {
         "{text}"
     );
 
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_screen_match_reports_row_and_line() {
+    let manager = PtyManager::new();
+    start_sh_43x155(&manager, "printf 'first\\nsecond READY here\\n'; sleep 5").await;
+
+    let found = manager
+        .expect(&expectation("READY", ExpectTarget::Screen, 5_000))
+        .await
+        .expect("on screen");
+    let line = found.line.expect("screen matches have a line");
+    assert_eq!(line.row, 1);
+    assert_eq!(line.text, "second READY here");
+    assert!(found.before.is_empty() && found.after.is_empty());
+    manager.stop_app().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_expect_tool_context_and_row() {
+    use rmcp::handler::server::wrapper::Parameters;
+    use shadowpty::server::{ShadowPtyServer, TuiExpectParams};
+
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    start_sh_43x155(
+        &manager,
+        "printf 'compiling crate\\nerror: E0308 mismatched types\\nnote: see above\\n'; sleep 5",
+    )
+    .await;
+    let call = |params: TuiExpectParams| {
+        let server = server.clone();
+        async move {
+            let result = server
+                .tui_expect(Parameters(params))
+                .await
+                .expect("tool call ok");
+            assert!(!result.is_error.unwrap_or(false));
+            let content = serde_json::to_value(&result.content).expect("serialize");
+            content[0]["text"].as_str().expect("text").to_string()
+        }
+    };
+
+    let with_context = call(TuiExpectParams {
+        pattern: Some("error:".to_string()),
+        include_context: Some(true),
+        timeout_ms: Some(5_000),
+        ..TuiExpectParams::default()
+    })
+    .await;
+    assert!(
+        with_context.contains("Output before the match:\ncompiling crate"),
+        "{with_context}"
+    );
+    assert!(
+        with_context.contains("Output after the match (still unread):\n E0308 mismatched types"),
+        "{with_context}"
+    );
+
+    // The text after the match is still unread, and replies are short without include_context
+    let plain = call(TuiExpectParams {
+        pattern: Some("note:".to_string()),
+        timeout_ms: Some(5_000),
+        ..TuiExpectParams::default()
+    })
+    .await;
+    assert_eq!(plain, "Matched \"note:\" in session 'default'");
+
+    let on_screen = call(TuiExpectParams {
+        pattern: Some("E0308".to_string()),
+        screen_mode: Some(true),
+        timeout_ms: Some(5_000),
+        ..TuiExpectParams::default()
+    })
+    .await;
+    assert_eq!(
+        on_screen,
+        "Matched \"E0308\" on row 2: \"error: E0308 mismatched types\" in session 'default'"
+    );
     manager.stop_app().await.expect("stop");
 }

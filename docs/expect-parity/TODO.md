@@ -40,10 +40,12 @@ Legend: `[ ]` to do, `[~]` in progress, `[x]` done.
 - [x] Tests: glob rules (`output.rs`), glob in all three tools and the conflict error (`tests/expect_test.rs`).
 - [x] Docs: reference "Pattern syntax" section.
 
-### 1.5 Text around the match `[ ]`
+### 1.5 Text around the match `[x]`
 - [x] Decide the result format (ROADMAP open question 2): text in the tool reply; structured data in the session report.
-- [ ] Stream mode returns `before` and `after` (rest of the unread output); screen mode returns the matching line.
-- [ ] Tests.
+- [x] Stream mode: `before` and `after` (from up to 4096 bytes after the match, left unread); shown in the reply with `include_context: true`, 500 characters each.
+- [x] Screen mode: the reply always names the row (from 1) and the full line.
+- [x] Tests: row and line (`tests/expect_test.rs`), `after` stays unread (`output.rs`), reply text with and without context.
+- [x] Docs: reference.
 
 ## Session report (JSON)
 
