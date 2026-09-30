@@ -420,10 +420,62 @@ async fn test_report_events_reach_viewers_in_order() {
     for event in late {
         sink.push(event);
     }
+    // The session's own report comes first: its `start` was forwarded when watching began
+    let start = events.until("report", |_| true).await;
+    assert_eq!(start["type"], "start", "{start}");
+    assert_eq!(start["session_id"], "live-report", "{start}");
     for expected in &fixture {
         let received = events.until("report", |_| true).await;
         assert_eq!(&received, expected);
     }
 
     manager.stop_session("live-report").await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_session_report_reaches_the_viewer() {
+    let manager = PtyManager::new();
+    let server = ShadowPtyServer::new(manager.clone());
+    let url = start_live(&server, "live-checks", "echo STEP_ONE; sleep 30").await;
+    manager
+        .expect_session(
+            "live-checks",
+            &Expectation::new(
+                Pattern::literal("STEP_ONE").unwrap(),
+                ExpectTarget::Stream,
+                WAIT,
+            ),
+        )
+        .await
+        .expect("step one");
+    server
+        .tui_input(Parameters(TuiInputParams {
+            keys: "x".to_string(),
+            session_id: Some("live-checks".to_string()),
+        }))
+        .await
+        .expect("tool call ok");
+
+    // A viewer who connects mid-session gets what already happened, in order
+    let mut events = EventStream::open(&url).await;
+    let kinds = [
+        events.until("report", |_| true).await,
+        events.until("report", |_| true).await,
+        events.until("report", |_| true).await,
+    ];
+    assert_eq!(kinds[0]["type"], "start", "{kinds:?}");
+    assert_eq!(kinds[1]["type"], "expect", "{kinds:?}");
+    assert_eq!(kinds[1]["passed"], true, "{kinds:?}");
+    assert_eq!(kinds[2]["type"], "input", "{kinds:?}");
+
+    // Then live: ending the session sends its exit and summary
+    server
+        .tui_end(Parameters(TuiEndParams {
+            session_id: Some("live-checks".to_string()),
+        }))
+        .await
+        .expect("tool call ok");
+    let summary = events.until("report", |e| e["type"] == "summary").await;
+    assert_eq!(summary["checks"], 1, "{summary}");
+    assert_eq!(summary["passed"], 1, "{summary}");
 }

@@ -38,4 +38,4 @@ In progress on `feat/expect-parity`: plan in [`docs/expect-parity/ROADMAP.md`](d
 
 ## Live viewer
 
-- [ ] **Feed report events to the live viewer** once `feat/session-report` merges: implement `forward_report_events` in `src/live/mod.rs` with `PtyManager::subscribe_report_session` (the loop is sketched in its `TODO(session-report)` comment) and drop its `#[allow(clippy::unused_async)]`. Subscribing happens right after `tui_start` spawns the session, so the report's `start` event is only seen if the report replays it or `start_session` returns the receiver. Then add an integration test that runs `tui_expect` on a live session and receives a `report` event with `passed`. The page already handles every event type (`tests/fixtures/live_report_events.jsonl`).
+- [x] **Feed report events to the live viewer**: `forward_report_events` sends the report's history, then each new event; `tests/live_test.rs` checks a real session's `start`, `expect`, `input` and `summary` reach a viewer.

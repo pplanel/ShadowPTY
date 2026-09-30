@@ -376,7 +376,9 @@ The server starts on the first `live: true` and is shared by every session of th
 - At most 64 connections at once; a client that doesn't send its request within 5 s, or doesn't read for 10 s, is dropped.
 - Anyone on the same machine who gets the link can watch; treat it like the session's output.
 
-**Limitations.** The `report` stream is defined but not fed yet: it is wired to the session report once that lands (`forward_report_events` in `src/live/mod.rs`, see `TODO.md`). Until then the timeline stays empty; screen, status and elapsed time work. Plain HTTP on loopback only, so it can't be watched from another machine without a tunnel. No scrollback, like `tui_read`.
+The `report` events are the [session report](#session-report)'s lines, sent whether or not the session writes a report file; a viewer that connects mid-session first gets the ones so far.
+
+**Limitations.** Plain HTTP on loopback only, so it can't be watched from another machine without a tunnel. No scrollback, like `tui_read`.
 
 ---
 

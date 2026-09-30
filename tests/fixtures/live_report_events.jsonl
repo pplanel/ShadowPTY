@@ -2,6 +2,7 @@
 {"type":"input","at_ms":120,"keys":"echo hello<ENTER>","bytes":11}
 {"type":"paste","at_ms":180,"text":"line one\nline two\n","bytes":18}
 {"type":"resize","at_ms":200,"rows":30,"cols":100}
+{"type":"signal","at_ms":230,"signal":"SIGINT","target":"foreground","id":4242}
 {"type":"expect","at_ms":260,"target":"screen","syntax":"literal","patterns":["hello"],"timeout_ms":10000,"passed":true,"elapsed_ms":40,"pattern_index":0,"matched":"hello","row":3}
 {"type":"expect","at_ms":10300,"target":"stream","syntax":"regex","patterns":["Build (ok|done)","error"],"timeout_ms":10000,"passed":false,"elapsed_ms":10000,"error":"any of 'Build (ok|done)', 'error' not found in output: timed out after 10s"}
 {"type":"wait_gone","at_ms":10400,"patterns":["Loading"],"timeout_ms":5000,"passed":true,"elapsed_ms":90}

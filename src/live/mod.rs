@@ -8,7 +8,8 @@
 //!   times (see [`Status`]);
 //! - `frame`: the screen as SVG, rendered server-side from the session's one emulator, so the
 //!   person sees exactly what the agent reads (see [`frames`]);
-//! - `report`: one session-report event (input, check, screenshot, exit, summary) as JSON.
+//! - `report`: one session-report event (start, input, signal, check, screenshot, exit, summary)
+//!   as JSON.
 //!
 //! Security: loopback only, a random 128-bit token required in every URL (`?t=`), the `Host`
 //! header must be `127.0.0.1:PORT` or `localhost:PORT` (against DNS rebinding), and the viewer is
@@ -183,28 +184,30 @@ impl ReportSink {
     }
 }
 
-/// Forwards the session's report events (inputs, checks, screenshots, exit, summary) to its
-/// viewers as `report` events.
-// TODO(session-report): subscribe via PtyManager::subscribe_report_session once feat/session-report lands:
-//     let mut events = manager.subscribe_report_session(session_id).await?;
-//     tokio::spawn(async move {
-//         loop {
-//             match events.recv().await {
-//                 Ok(event) => sink.push(&event),
-//                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-//                     tracing::warn!("live viewer skipped {skipped} report events");
-//                 }
-//                 Err(broadcast::error::RecvError::Closed) => break,
-//             }
-//         }
-//     });
-#[allow(clippy::unused_async)]
+/// Forwards the session's report events (start, inputs, checks, screenshots, exit, summary) to
+/// its viewers as `report` events: the ones so far, then each new one until the session's report
+/// is gone.
 async fn forward_report_events(
     manager: &PtyManager,
     session_id: &str,
     sink: ReportSink,
 ) -> Result<()> {
-    let _ = (manager, session_id, sink);
+    let subscription = manager.subscribe_report_session(session_id).await?;
+    for event in &subscription.history {
+        sink.push(event);
+    }
+    let mut events = subscription.live;
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => sink.push(&event),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!("live viewer skipped {skipped} report events");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
     Ok(())
 }
 

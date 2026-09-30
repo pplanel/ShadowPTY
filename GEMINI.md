@@ -30,6 +30,7 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 - `src/signals.rs`: signal names ↔ platform numbers for `tui_signal` and exit messages.
 - `src/input.rs`: `<ENTER>`, `<UP>`, `<CTRL+C>`, … key tokens to bytes. `src/recorder.rs`: asciicast v3.
 - `src/report.rs`: session report. Every session broadcasts `ReportEvent`s (inputs, checks, screenshots, exit, summary); `report_path` also writes them as JSON Lines. The reader writes the `exit` entry once, after the last output; the `summary` is written once when the session ends (`finish`), never at process exit.
+- `src/live/`: live viewer (`tui_start` with `live: true`). A hand-written HTTP/SSE server on 127.0.0.1 (random token, `Host` check, view-only) that streams SVG frames (one producer per session, at most `MAX_FPS`, snapshot under the lock and render outside it), status, and the session's report events. Holds only weak handles on sessions.
 
 ## Invariants
 

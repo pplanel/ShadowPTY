@@ -303,13 +303,18 @@ function describeEvent(ev) {
     case "resize":
       out.text = "Resized to " + ev.rows + " rows × " + ev.cols + " cols";
       break;
+    case "signal":
+      out.text = "Sent " + (ev.signal || "a signal");
+      out.detail = (ev.target === "process" ? "to process " : "to the foreground process group ") + ev.id;
+      out.tone = "input";
+      break;
     case "expect": {
       out.kind = "expect";
       const where = ev.target === "screen" ? "on screen" : "in output";
       const syntax = ev.syntax && ev.syntax !== "literal" ? " (" + ev.syntax + ")" : "";
       if (ev.passed) {
         out.text = "Found " + JSON.stringify(ev.matched === undefined ? "" : ev.matched) + " " + where +
-          (typeof ev.row === "number" ? " at row " + (ev.row + 1) : "") + took;
+          (typeof ev.row === "number" ? " at row " + ev.row : "") + took;
         if ((ev.patterns || []).length > 1) out.detail = "pattern " + ((ev.pattern_index || 0) + 1) + " of " + ev.patterns.length + ": " + quoteList(ev.patterns) + syntax;
         else if (syntax) out.detail = quoteList(ev.patterns) + syntax;
       } else {
