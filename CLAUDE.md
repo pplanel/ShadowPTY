@@ -50,4 +50,5 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 - `anyhow::Result` in the session and manager; tools convert errors to `CallToolResult::error`.
 - Tests default to a **43 rows × 155 cols** screen unless told otherwise.
 - Integration tests use real processes (`sh -c`, `cat`); wait with `expect`/`wait_stable`, not fixed sleeps.
+- Tool results are short, human-like text for the model (it relays them to the person). Machine-readable output goes to files written during the session: the asciicast recording and, once built, the JSON session report (`docs/expect-parity/ROADMAP.md`).
 - New tools or parameters: update `docs/reference.md` (and the capabilities table in `README.md` if users would notice).

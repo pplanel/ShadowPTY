@@ -38,9 +38,20 @@ Legend: `[ ]` to do, `[~]` in progress, `[x]` done.
 - [ ] Tests: glob matching, conflicting `syntax` + `is_regex`.
 
 ### 1.5 Text around the match `[ ]`
-- [ ] Decide the result format (ROADMAP open question 2).
+- [x] Decide the result format (ROADMAP open question 2): text in the tool reply; structured data in the session report.
 - [ ] Stream mode returns `before` and `after` (rest of the unread output); screen mode returns the matching line.
 - [ ] Tests.
+
+## Session report (JSON)
+
+After Phase 1; see [ROADMAP](./ROADMAP.md#session-report-json).
+
+- [ ] Report writer (JSON Lines, flushed per entry) behind a `report_path` on `tui_start`.
+- [ ] Entries: session start (command, size), inputs, each expectation (patterns, target, timeout, outcome, elapsed ms, matched text), waits, screenshots (path/format), exit status.
+- [ ] Summary entry on `tui_end` / process exit: checks run, passed, failed, exit code.
+- [ ] Share timing with session metrics (5.2) where they overlap.
+- [ ] Tests: passing and failing checks, crash mid-session still leaves valid lines, summary counts.
+- [ ] Docs: reference (format and fields), README (TDD/CI section).
 
 ## Phase 2: Process control and input
 
