@@ -700,6 +700,19 @@ impl TuiSession {
         self.report.record_screenshot(shot);
     }
 
+    /// Watches the screen: the value changes whenever output arrives or the screen changes
+    /// without output (resize, flushed synchronized update). Closes once the session is gone.
+    #[must_use]
+    pub fn watch_changes(&self) -> watch::Receiver<u64> {
+        self.output.subscribe()
+    }
+
+    /// Watches the exit status: `None` while the process runs.
+    #[must_use]
+    pub fn watch_exit(&self) -> watch::Receiver<Option<ExitStatus>> {
+        self.exit.clone()
+    }
+
     /// Waits for the process to exit, then returns its status and the output the agent hadn't
     /// seen yet (marked as read).
     pub async fn wait_exit(&self, timeout: Duration) -> Result<ProcessExit> {
@@ -851,6 +864,8 @@ impl TuiSession {
             info.rows = rows;
             info.cols = cols;
         }
+        // The grid changed size (and text re-wrapped) even if the app draws nothing
+        self.output.notify_screen_changed();
 
         if let Ok(mut rec_guard) = self.recorder.lock()
             && let Some(rec) = rec_guard.as_mut()

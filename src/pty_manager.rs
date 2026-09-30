@@ -50,7 +50,7 @@ impl PtyManager {
     }
 
     /// Fetches an Arc to the target session under the short registry lock.
-    async fn get_session(&self, session_id: &str) -> Result<Arc<TuiSession>> {
+    pub async fn get_session(&self, session_id: &str) -> Result<Arc<TuiSession>> {
         let sessions = self.sessions.lock().await;
         sessions
             .get(session_id)

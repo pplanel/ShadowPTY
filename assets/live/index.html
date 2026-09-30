@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>ShadowPTY live</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f4;
+    --panel: #ffffff;
+    --fg: #1c1917;
+    --muted: #57534e;
+    --faint: #a8a29e;
+    --border: #e7e5e4;
+    --pass: #15803d;
+    --pass-bg: #dcfce7;
+    --fail: #b91c1c;
+    --fail-bg: #fee2e2;
+    --accent: #1d4ed8;
+    --accent-bg: #dbeafe;
+    --neutral-bg: #f5f5f4;
+    --term-frame: #1c1917;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0a09;
+      --panel: #1c1917;
+      --fg: #e7e5e4;
+      --muted: #a8a29e;
+      --faint: #78716c;
+      --border: #292524;
+      --pass: #4ade80;
+      --pass-bg: #14532d;
+      --fail: #f87171;
+      --fail-bg: #7f1d1d;
+      --accent: #93c5fd;
+      --accent-bg: #1e3a8a;
+      --neutral-bg: #292524;
+      --term-frame: #292524;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 20px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .ident { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 280px; }
+  .brand { color: var(--faint); font-weight: 600; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+  #session { font-weight: 700; font-size: 16px; white-space: nowrap; }
+  #command { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 12px;
+    background: var(--neutral-bg); color: var(--muted); white-space: nowrap;
+  }
+  .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .pill.running { background: var(--pass-bg); color: var(--pass); }
+  .pill.running::before { animation: pulse 1.4s ease-in-out infinite; }
+  .pill.failed { background: var(--fail-bg); color: var(--fail); }
+  @keyframes pulse { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .pill.running::before { animation: none; } }
+  .metrics { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; }
+  .metrics div { display: flex; gap: 6px; align-items: baseline; }
+  .metrics dt { color: var(--muted); font-size: 12px; }
+  .metrics dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #passed { color: var(--pass); }
+  #failed.nonzero { color: var(--fail); }
+  #connection { font-size: 12px; color: var(--faint); white-space: nowrap; }
+  #connection.down { color: var(--fail); }
+  main {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 2.2fr) minmax(300px, 1fr);
+    gap: 16px;
+    padding: 16px;
+  }
+  .screen {
+    background: var(--term-frame);
+    border-radius: 10px;
+    padding: 10px;
+    align-self: start;
+    min-width: 0;
+  }
+  .screen img { display: block; width: 100%; height: auto; border-radius: 4px; }
+  .screen .placeholder { color: #a8a29e; font-family: var(--mono); font-size: 13px; padding: 40px 16px; text-align: center; }
+  .screen .caption { color: #a8a29e; font-size: 12px; margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; }
+  aside {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    max-height: calc(100vh - 110px);
+  }
+  aside h2 { font-size: 13px; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  aside h2 button { font: inherit; font-size: 12px; font-weight: 500; border: 1px solid var(--border); background: transparent; color: var(--accent); border-radius: 6px; padding: 1px 8px; cursor: pointer; }
+  #summary { display: none; margin: 10px 14px 0; padding: 10px 12px; border-radius: 8px; font-weight: 600; }
+  #summary.shown { display: block; }
+  #summary.pass { background: var(--pass-bg); color: var(--pass); }
+  #summary.fail { background: var(--fail-bg); color: var(--fail); }
+  #timeline { list-style: none; margin: 0; padding: 6px 0; overflow-y: auto; flex: 1; }
+  #timeline .empty { color: var(--faint); padding: 12px 14px; }
+  .event { display: grid; grid-template-columns: 58px 104px minmax(0, 1fr); gap: 2px 8px; padding: 5px 14px; border-left: 3px solid transparent; }
+  .event.pass { border-left-color: var(--pass); }
+  .event.fail { border-left-color: var(--fail); background: color-mix(in srgb, var(--fail-bg) 45%, transparent); }
+  .event .at { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; padding-top: 1px; }
+  .event .kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); padding-top: 2px; white-space: nowrap; }
+  .event.pass .kind { color: var(--pass); }
+  .event.fail .kind { color: var(--fail); }
+  .event.input .kind { color: var(--accent); }
+  .event .text { overflow-wrap: anywhere; }
+  .event code { font-family: var(--mono); font-size: 12px; background: var(--neutral-bg); padding: 0 4px; border-radius: 4px; }
+  .event .detail { grid-column: 3; color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); margin: 0; max-height: 9em; overflow-y: auto; }
+  .event.fail .detail { color: var(--fail); }
+  @media (max-width: 900px) {
+    /* One column, and the page scrolls instead of the timeline */
+    html, body { height: auto; }
+    main { grid-template-columns: minmax(0, 1fr); min-height: auto; }
+    aside { max-height: none; }
+    #timeline { overflow: visible; }
+    aside h2 button { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="ident">
+    <span class="brand">ShadowPTY live</span>
+    <span id="session">…</span>
+    <span id="command"></span>
+  </div>
+  <span id="state" class="pill">connecting</span>
+  <dl class="metrics">
+    <div><dt>Checks</dt><dd id="checks">0</dd></div>
+    <div><dt>Passed</dt><dd id="passed">0</dd></div>
+    <div><dt>Failed</dt><dd id="failed">0</dd></div>
+    <div><dt>Elapsed</dt><dd id="elapsed">–</dd></div>
+    <div><dt>Frames</dt><dd id="fps">0/s</dd></div>
+  </dl>
+  <span id="connection">connecting…</span>
+</header>
+<main>
+  <section class="screen" aria-label="Terminal screen">
+    <div id="placeholder" class="placeholder">Waiting for the first frame…</div>
+    <img id="frame" alt="Live terminal screen" hidden>
+    <div class="caption"><span id="size"></span><span>view-only · same screen the agent reads</span></div>
+  </section>
+  <aside aria-label="Timeline">
+    <h2><span>Timeline <span id="count" style="color:var(--faint);font-weight:500"></span></span><button id="follow" type="button" hidden>Jump to latest</button></h2>
+    <div id="summary" role="status"></div>
+    <ol id="timeline"><li class="empty">Inputs, checks and screenshots appear here as the agent works.</li></ol>
+  </aside>
+</main>
+<script>
+"use strict";
+// --- event model (pure; no DOM) ---
+// Report events follow the session report's format: {"type": ..., "at_ms": ..., ...}. A check is
+// any event with a `passed` field; failed ones carry `error`.
+
+function formatExit(status) {
+  if (status === null || status === undefined) return "running";
+  if (status === "unknown") return "exited (status unknown)";
+  if (typeof status === "object" && "exit_code" in status) return "exited with code " + status.exit_code;
+  if (typeof status === "object" && "signal" in status) return "killed by signal " + status.signal;
+  return String(status);
+}
+
+function exitFailed(status) {
+  if (status === null || status === undefined || status === "unknown") return false;
+  return !(typeof status === "object" && status.exit_code === 0);
+}
+
+function formatMs(ms) {
+  if (typeof ms !== "number") return "";
+  return ms < 1000 ? ms + " ms" : (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + " s";
+}
+
+function formatBytes(n) {
+  if (typeof n !== "number") return "";
+  return n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
+}
+
+function quoteList(patterns) {
+  return (patterns || []).map((p) => JSON.stringify(p)).join(" or ");
+}
+
+function truncate(text, max) {
+  const s = String(text);
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+// Returns {kind, text, code, detail, tone}. `code` is shown monospaced after `text`.
+function describeEvent(ev) {
+  const isCheck = "passed" in ev;
+  const tone = isCheck ? (ev.passed ? "pass" : "fail") : (ev.type === "input" || ev.type === "paste" ? "input" : "info");
+  const took = typeof ev.elapsed_ms === "number" ? " in " + formatMs(ev.elapsed_ms) : "";
+  const failure = isCheck && !ev.passed && ev.error ? String(ev.error) : "";
+  const out = { kind: ev.type || "event", text: "", code: "", detail: failure, tone };
+  switch (ev.type) {
+    case "start":
+      out.text = "Session started";
+      out.code = ev.command ? [ev.command].concat(ev.args || []).join(" ") : "";
+      if (ev.rows && ev.cols) out.detail = ev.rows + " rows × " + ev.cols + " cols";
+      break;
+    case "input":
+      out.text = "Typed";
+      out.code = ev.keys === undefined ? "" : String(ev.keys);
+      if (typeof ev.bytes === "number") out.detail = ev.bytes + " bytes";
+      break;
+    case "paste":
+      out.text = "Pasted " + (typeof ev.bytes === "number" ? formatBytes(ev.bytes) : "text");
+      out.detail = ev.text === undefined ? "" : truncate(ev.text, 400);
+      break;
+    case "resize":
+      out.text = "Resized to " + ev.rows + " rows × " + ev.cols + " cols";
+      break;
+    case "expect": {
+      out.kind = "expect";
+      const where = ev.target === "screen" ? "on screen" : "in output";
+      const syntax = ev.syntax && ev.syntax !== "literal" ? " (" + ev.syntax + ")" : "";
+      if (ev.passed) {
+        out.text = "Found " + JSON.stringify(ev.matched === undefined ? "" : ev.matched) + " " + where +
+          (typeof ev.row === "number" ? " at row " + (ev.row + 1) : "") + took;
+        if ((ev.patterns || []).length > 1) out.detail = "pattern " + ((ev.pattern_index || 0) + 1) + " of " + ev.patterns.length + ": " + quoteList(ev.patterns) + syntax;
+        else if (syntax) out.detail = quoteList(ev.patterns) + syntax;
+      } else {
+        out.text = "Expected " + quoteList(ev.patterns) + syntax + " " + where + (typeof ev.timeout_ms === "number" ? " within " + formatMs(ev.timeout_ms) : "");
+      }
+      break;
+    }
+    case "wait_gone":
+      out.kind = "wait gone";
+      out.text = (ev.passed ? "Gone from screen: " : "Still on screen: ") + quoteList(ev.patterns) + took;
+      break;
+    case "wait_stable":
+      out.kind = "wait stable";
+      out.text = ev.passed ? "Screen settled" + took : "Screen didn't settle" + took;
+      if (typeof ev.quiet_period_ms === "number") out.text += " (quiet " + formatMs(ev.quiet_period_ms) + ")";
+      break;
+    case "wait_exit":
+      out.kind = "wait exit";
+      out.text = ev.passed ? "Process " + formatExit(ev.exit_status) + took : "Process still running" + took;
+      break;
+    case "run_script": {
+      out.kind = "script";
+      const commands = ev.commands || [];
+      out.text = (ev.passed ? "Ran " : "Script stopped after ") + commands.length + " command" + (commands.length === 1 ? "" : "s") + took;
+      out.code = commands.join(" ; ");
+      break;
+    }
+    case "screenshot":
+      out.text = "Screenshot" + (ev.format ? " (" + String(ev.format).toUpperCase() + ")" : "") + (typeof ev.bytes === "number" ? ", " + formatBytes(ev.bytes) : "");
+      out.code = ev.path || "";
+      break;
+    case "exit":
+      out.text = "Process " + formatExit(ev.exit_status);
+      if (exitFailed(ev.exit_status)) out.tone = "fail-soft";
+      break;
+    case "summary":
+      out.text = ev.checks + " checks: " + ev.passed + " passed, " + ev.failed + " failed" +
+        (ev.exit_status !== undefined ? " · " + formatExit(ev.exit_status) : "") +
+        (typeof ev.duration_ms === "number" ? " · " + formatMs(ev.duration_ms) : "");
+      out.tone = ev.failed > 0 ? "fail" : "pass";
+      out.detail = "";
+      break;
+    default: {
+      const rest = Object.assign({}, ev);
+      delete rest.type;
+      delete rest.at_ms;
+      out.text = truncate(JSON.stringify(rest), 300);
+    }
+  }
+  return out;
+}
+
+function newCounters() {
+  return { checks: 0, passed: 0, failed: 0, summary: null };
+}
+
+// Counts checks as they come; a summary event, when it arrives, has the final numbers.
+function applyCounters(counters, ev) {
+  if (ev.type === "summary") {
+    counters.summary = ev;
+    counters.checks = ev.checks;
+    counters.passed = ev.passed;
+    counters.failed = ev.failed;
+  } else if ("passed" in ev && !counters.summary) {
+    counters.checks += 1;
+    if (ev.passed) counters.passed += 1;
+    else counters.failed += 1;
+  }
+  return counters;
+}
+// --- end event model ---
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const token = params.get("t") || "";
+const match = location.pathname.match(/^\/s\/([^/]+)$/);
+const sessionId = match ? decodeURIComponent(match[1]) : "";
+$("session").textContent = sessionId;
+document.title = sessionId + " · ShadowPTY live";
+
+let counters = newCounters();
+let status = null;
+let frameUrl = null;
+let frameTimes = [];
+let following = true;
+let eventCount = 0;
+const timeline = $("timeline");
+
+function resetTimeline() {
+  counters = newCounters();
+  eventCount = 0;
+  timeline.replaceChildren();
+  const empty = document.createElement("li");
+  empty.className = "empty";
+  empty.textContent = "Inputs, checks and screenshots appear here as the agent works.";
+  timeline.append(empty);
+  $("summary").className = "";
+  renderCounters();
+}
+
+function renderCounters() {
+  $("checks").textContent = counters.checks;
+  $("passed").textContent = counters.passed;
+  $("failed").textContent = counters.failed;
+  $("failed").className = counters.failed > 0 ? "nonzero" : "";
+  $("count").textContent = eventCount ? "(" + eventCount + ")" : "";
+}
+
+function addEvent(ev) {
+  const d = describeEvent(ev);
+  applyCounters(counters, ev);
+  eventCount += 1;
+  if (eventCount === 1) timeline.replaceChildren();
+
+  const li = document.createElement("li");
+  li.className = "event " + (d.tone === "fail-soft" ? "" : d.tone);
+  const at = document.createElement("span");
+  at.className = "at";
+  at.textContent = typeof ev.at_ms === "number" ? "+" + (ev.at_ms / 1000).toFixed(2) + "s" : "";
+  const kind = document.createElement("span");
+  kind.className = "kind";
+  kind.textContent = (d.tone === "pass" ? "✓ " : d.tone === "fail" ? "✗ " : "") + d.kind;
+  const text = document.createElement("span");
+  text.className = "text";
+  text.textContent = d.text;
+  if (d.code) {
+    const code = document.createElement("code");
+    code.textContent = d.code;
+    text.append(" ", code);
+  }
+  li.append(at, kind, text);
+  if (d.detail) {
+    const detail = document.createElement("pre");
+    detail.className = "detail";
+    detail.textContent = d.detail;
+    li.append(detail);
+  }
+  timeline.append(li);
+
+  if (ev.type === "summary") {
+    const summary = $("summary");
+    summary.textContent = "Summary: " + d.text;
+    summary.className = "shown " + (ev.failed > 0 ? "fail" : "pass");
+  }
+  renderCounters();
+  if (following) timeline.scrollTop = timeline.scrollHeight;
+}
+
+timeline.addEventListener("scroll", () => {
+  following = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 24;
+  $("follow").hidden = following;
+});
+$("follow").addEventListener("click", () => {
+  following = true;
+  timeline.scrollTop = timeline.scrollHeight;
+  $("follow").hidden = true;
+});
+
+function renderStatus() {
+  if (!status) return;
+  $("command").textContent = status.command;
+  $("command").title = status.command;
+  const pill = $("state");
+  if (status.state === "running") {
+    pill.textContent = "running";
+    pill.className = "pill running";
+  } else {
+    const exit = formatExit(status.exit_status);
+    pill.textContent = status.state === "closed" ? "ended · " + exit : exit;
+    pill.className = "pill" + (exitFailed(status.exit_status) ? " failed" : "");
+  }
+}
+
+function tick() {
+  if (status) {
+    const end = status.ended_ms || Date.now();
+    const s = Math.max(0, (end - status.started_ms) / 1000);
+    const m = Math.floor(s / 60);
+    $("elapsed").textContent = m > 0 ? m + "m " + (s % 60).toFixed(0).padStart(2, "0") + "s" : s.toFixed(1) + " s";
+  }
+  const now = performance.now();
+  frameTimes = frameTimes.filter((t) => now - t < 1000);
+  $("fps").textContent = frameTimes.length + "/s";
+}
+setInterval(tick, 250);
+
+function showFrame(frame) {
+  frameTimes.push(performance.now());
+  const url = URL.createObjectURL(new Blob([frame.svg], { type: "image/svg+xml" }));
+  const img = $("frame");
+  const previous = frameUrl;
+  frameUrl = url;
+  img.onload = () => { if (previous) URL.revokeObjectURL(previous); };
+  img.src = url;
+  img.hidden = false;
+  $("placeholder").hidden = true;
+  $("size").textContent = frame.rows + " rows × " + frame.cols + " cols";
+}
+
+function setConnection(text, down) {
+  $("connection").textContent = text;
+  $("connection").className = down ? "down" : "";
+}
+
+function connect() {
+  const source = new EventSource("/s/" + encodeURIComponent(sessionId) + "/events?t=" + encodeURIComponent(token));
+  // Every connection starts with the full history, so start the timeline over
+  source.addEventListener("open", () => {
+    resetTimeline();
+    setConnection("● live", false);
+  });
+  source.addEventListener("status", (e) => {
+    status = JSON.parse(e.data);
+    renderStatus();
+    tick();
+  });
+  source.addEventListener("frame", (e) => showFrame(JSON.parse(e.data)));
+  source.addEventListener("report", (e) => addEvent(JSON.parse(e.data)));
+  source.addEventListener("error", () => {
+    if (source.readyState === EventSource.CLOSED) {
+      setConnection("session not available", true);
+      if (!status) $("placeholder").textContent = "This session isn't being shown live. Check the link, or start the session again with live: true.";
+    } else {
+      setConnection("reconnecting…", true);
+    }
+  });
+}
+
+if (sessionId && token) connect();
+else setConnection("missing session or token in the link", true);
+</script>
+</body>
+</html>

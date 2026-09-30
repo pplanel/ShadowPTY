@@ -291,6 +291,14 @@ impl SessionOutput {
         self.bump();
     }
 
+    /// Subscribes to the revision counter, which changes on every chunk and every screen change
+    /// without output. The receiver doesn't keep the output alive: it closes when the session is
+    /// gone.
+    #[must_use]
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.revision.subscribe()
+    }
+
     /// Marks the stream as ended (the process closed the PTY) and wakes waiters.
     pub fn close(&self) {
         self.state().eof = true;

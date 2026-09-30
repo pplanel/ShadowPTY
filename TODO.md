@@ -35,3 +35,7 @@ The plan is in `docs/proposals/RFC-single-emulator-core.md`. The work is stacked
 ## API parity with `rust-expect`
 
 In progress on `feat/expect-parity`: plan in [`docs/expect-parity/ROADMAP.md`](docs/expect-parity/ROADMAP.md), tasks in [`docs/expect-parity/TODO.md`](docs/expect-parity/TODO.md).
+
+## Live viewer
+
+- [ ] **Feed report events to the live viewer** once `feat/session-report` merges: implement `forward_report_events` in `src/live/mod.rs` with `PtyManager::subscribe_report_session` (the loop is sketched in its `TODO(session-report)` comment) and drop its `#[allow(clippy::unused_async)]`. Subscribing happens right after `tui_start` spawns the session, so the report's `start` event is only seen if the report replays it or `start_session` returns the receiver. Then add an integration test that runs `tui_expect` on a live session and receives a `report` event with `passed`. The page already handles every event type (`tests/fixtures/live_report_events.jsonl`).

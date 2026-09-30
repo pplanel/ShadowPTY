@@ -397,6 +397,7 @@ async fn test_report_tools_reply_and_screenshots() {
             record_path: None,
             report_path: Some(path_str.clone()),
             session_id: Some("reported".to_string()),
+            live: None,
         }))
         .await
         .expect("tool call ok");
@@ -478,6 +479,7 @@ async fn test_tool_replies_without_a_report() {
             record_path: None,
             report_path: None,
             session_id: None,
+            live: None,
         }))
         .await
         .expect("tool call ok");

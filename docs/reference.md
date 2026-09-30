@@ -7,6 +7,7 @@ Tool parameters, screen format, recording format and architecture. For an overvi
 - [Reading the screen](#reading-the-screen)
 - [Recording](#recording)
 - [Session report](#session-report)
+- [Live viewer](#live-viewer)
 - [Architecture](#architecture)
 - [Development](#development)
 - [Limitations](#limitations)
@@ -48,12 +49,19 @@ Spawns `command` in a new pseudo-terminal. Starting a `session_id` that is alrea
 | `record_path` | string | – | Record the session to this `.cast` file |
 | `report_path` | string | – | Write a JSON Lines [session report](#session-report) of every check to this file |
 | `session_id` | string | `"default"` | |
+| `live` | boolean | `false` | Serve a view-only page where a person can watch the session live; see [Live viewer](#live-viewer) |
 
 ```json
 { "command": "htop", "rows": 43, "cols": 155, "record_path": "/tmp/htop.cast", "report_path": "/tmp/htop.jsonl", "session_id": "htop" }
 ```
 
 The reply names the files, e.g. `…, recording to '/tmp/htop.cast', reporting to '/tmp/htop.jsonl')`. A report file that can't be created fails the call before anything is started.
+
+With `live: true` the reply ends with the link to hand to the person (the agent shouldn't open it):
+
+```text
+Started command 'htop' in PTY session 'htop' (pid: 12345, rows: 43, cols: 155), watch live at http://127.0.0.1:52817/s/htop?t=3f9c…
+```
 
 ### `tui_input`
 
@@ -330,6 +338,48 @@ The same events are available in process to anything embedding ShadowPTY, with o
 
 ---
 
+## Live viewer
+
+`tui_start` with `live: true` lets a person watch a session in a browser while the agent drives it: the screen as it changes, a timeline of inputs and checks with pass/fail, and running counts. The page is view-only.
+
+| URL | |
+| :--- | :--- |
+| `http://127.0.0.1:PORT/s/<session_id>?t=TOKEN` | The session's page (the link `tui_start` returns) |
+| `http://127.0.0.1:PORT/?t=TOKEN` | List of live sessions, refreshed every 5 s |
+| `http://127.0.0.1:PORT/s/<session_id>/events?t=TOKEN` | The page's event stream |
+
+The server starts on the first `live: true` and is shared by every session of that MCP server; it stops with the MCP server. `PORT` is picked by the OS and `TOKEN` is new each time. When a session ends (its process exits, or `tui_end`), its page keeps the final screen and timeline until the id is reused or the server stops. Starting the id again with `live: true` switches the open page to the new session; starting it without `live` takes it off the viewer.
+
+**Page.** One self-contained HTML file (no external scripts, styles or fonts), light and dark. The header shows the session id, command line, status (`running`, `exited with code N`, `killed by signal N`, `ended`), checks / passed / failed, elapsed time and frames per second. It reconnects by itself (`EventSource`) and replays the timeline on reconnect.
+
+**Events.** Server-sent events (`text/event-stream`), each with one line of JSON data:
+
+| Event | Data | When |
+| :--- | :--- | :--- |
+| `status` | `{"session_id", "command", "state", "exit_status", "started_ms", "ended_ms"}` | On connect and when it changes |
+| `frame` | `{"seq", "rows", "cols", "svg"}` | On connect (latest frame) and when the screen changes |
+| `report` | One session-report event, e.g. `{"type": "expect", "at_ms": 123, "passed": true, …}` | Past ones on connect, then as they happen |
+
+- `state` is `running`, `exited` (the process ended, the session is still open) or `closed` (`tui_end`, or the id was replaced). `exit_status` is `null`, `{"exit_code": N}`, `{"signal": N}` or `"unknown"`, as in `tui_list_sessions`. Times are milliseconds since the Unix epoch.
+- `svg` is the same render as `tui_take_screenshot` with `format: "svg"`, taken from the session's one emulator, so the person sees exactly what the agent reads. `seq` increases with each frame; an unchanged screen isn't sent again.
+- `report` events use the JSON session report's format (`type`: `start`, `input`, `paste`, `resize`, `expect`, `wait_gone`, `wait_stable`, `wait_exit`, `run_script`, `screenshot`, `exit`, `summary`). A check is any event with a `passed` field; failed ones carry `error`. The page counts checks as they arrive and takes the final numbers from `summary`.
+
+**Frame rate and cost.** A per-session task watches the session's revision counter and exit status. When the screen changed, it takes a `Screen` snapshot under the terminal lock and renders the SVG outside it on a blocking thread, at most 15 frames per second (`MAX_FPS` in `src/live/frames.rs`) while someone watches, and once per second otherwise (so a late viewer still sees a recent screen right away). A burst of output becomes one frame. Frames are handed over through a `watch` channel, so a slow viewer just gets the latest frame and never holds up the reader or other viewers. On the benchmark's busy 43×155 screen a frame costs about 0.19 ms to capture and 0.5 ms to render (`cargo bench -- render`, `capture` + `screenshot_svg`, Apple M-series), about 1% of a core at 15 fps.
+
+**Security.**
+
+- Bound to 127.0.0.1 only, on an ephemeral port.
+- Every request must carry the server's token (128 random bits from `/dev/urandom`, hex) as `?t=`; otherwise `403`. The token is compared in constant time.
+- The `Host` header must be `127.0.0.1:PORT` or `localhost:PORT`; otherwise `421`. This stops DNS-rebinding pages from reading the stream.
+- Read-only: only `GET` is served (`405` otherwise), and nothing from the browser reaches the session.
+- Responses carry `Cache-Control: no-store`, `Referrer-Policy: no-referrer` (the token is in the URL), a strict `Content-Security-Policy` and `X-Frame-Options: DENY`. The screen is shown as an image, so SVG content can't run script.
+- At most 64 connections at once; a client that doesn't send its request within 5 s, or doesn't read for 10 s, is dropped.
+- Anyone on the same machine who gets the link can watch; treat it like the session's output.
+
+**Limitations.** The `report` stream is defined but not fed yet: it is wired to the session report once that lands (`forward_report_events` in `src/live/mod.rs`, see `TODO.md`). Until then the timeline stays empty; screen, status and elapsed time work. Plain HTTP on loopback only, so it can't be watched from another machine without a tunnel. No scrollback, like `tui_read`.
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -349,6 +399,7 @@ flowchart LR
     Term --> Screen["Screen snapshot"]
     Screen --> Text["tagged / plain text<br/>tui_read, screen expect"]
     Screen --> Shot["SVG / PNG<br/>tui_take_screenshot"]
+    Screen --> Live["SVG frames over SSE<br/>live viewer"]
     Output --> Waits["tui_expect, tui_wait_stable,<br/>tui_run_script"]
 ```
 
@@ -369,6 +420,7 @@ Design notes: [`RFC-single-emulator-core.md`](proposals/RFC-single-emulator-core
 | `src/palette.rs` | Color and style resolution |
 | `src/screenshot.rs`, `src/rasterizer.rs` | SVG and PNG rendering |
 | `src/input.rs` | Key tokens → bytes |
+| `src/live/` | Live viewer: HTTP/SSE server, frames, page (`assets/live/index.html`) |
 | `src/recorder.rs` | asciicast v3 writer |
 | `src/report.rs` | Session report: events, JSON Lines writer, check totals |
 

@@ -1,4 +1,5 @@
 pub mod input;
+pub mod live;
 pub mod output;
 pub mod palette;
 pub mod pty_manager;

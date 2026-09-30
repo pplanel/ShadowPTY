@@ -1,6 +1,7 @@
 //! MCP Tool Router implementation for `ShadowPTY`.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::{
@@ -11,6 +12,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::live::LiveServer;
 use crate::output::{Pattern, Syntax};
 use crate::pty_manager::{
     DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, ScreenshotTaken,
@@ -143,7 +145,7 @@ fn parse_patterns(
 }
 
 /// Parameters for `tui_start` tool.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TuiStartParams {
     /// The executable command to spawn (e.g. "top", "htop", "bash").
     pub command: String,
@@ -162,6 +164,10 @@ pub struct TuiStartParams {
     pub report_path: Option<String>,
     /// Identifier for this session (defaults to "default"). Starting an existing id replaces that session.
     pub session_id: Option<String>,
+    /// If true, the session can be watched live in a browser: the reply includes a link to a
+    /// local, view-only page showing the screen and a timeline of inputs and checks
+    /// (default false). The link contains a secret token; hand it to the person, don't open it.
+    pub live: Option<bool>,
 }
 
 /// Parameters for `tui_input` tool.
@@ -342,12 +348,17 @@ pub struct TuiScreenshotParams {
 #[derive(Clone)]
 pub struct ShadowPtyServer {
     manager: PtyManager,
+    /// The live viewer's HTTP server, started on the first `tui_start` with `live: true`.
+    live: Arc<tokio::sync::OnceCell<LiveServer>>,
 }
 
 impl ShadowPtyServer {
     #[must_use]
-    pub const fn new(manager: PtyManager) -> Self {
-        Self { manager }
+    pub fn new(manager: PtyManager) -> Self {
+        Self {
+            manager,
+            live: Arc::new(tokio::sync::OnceCell::new()),
+        }
     }
 
     /// Adds a screenshot that was rendered (and saved, if it has a path) to the session report.
@@ -358,6 +369,28 @@ impl ShadowPtyServer {
             .record_screenshot_session(session_id, &shot)
             .await;
     }
+
+    /// Starts showing a just-started session in the live viewer (starting the viewer if needed)
+    /// and returns its link. `command` is the command line shown on the page.
+    async fn watch_live(&self, session_id: &str, command: &str) -> anyhow::Result<String> {
+        let live = self.live.get_or_try_init(LiveServer::start).await?;
+        live.watch(&self.manager, session_id, command).await
+    }
+
+    /// A session was started without `live`: stop showing whatever ran under its id before.
+    fn forget_live(&self, session_id: &str) {
+        if let Some(live) = self.live.get() {
+            live.forget(session_id);
+        }
+    }
+}
+
+/// The command line as shown to the person watching.
+fn command_line(command: &str, args: &[String]) -> String {
+    std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[tool_router(server_handler)]
@@ -365,7 +398,7 @@ impl ShadowPtyServer {
     /// Spawns a new process in a native pseudo-terminal (PTY) and initializes the screen buffer.
     #[tool(
         name = "tui_start",
-        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once."
+        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once. With live: true, the reply includes a local link where a person can watch the session live in a browser (view-only); give them the link, don't open it."
     )]
     pub async fn tui_start(
         &self,
@@ -394,9 +427,22 @@ impl ShadowPtyServer {
                     .report_path
                     .as_ref()
                     .map_or_else(String::new, |path| format!(", reporting to '{path}'"));
-                let msg = format!(
+                let mut msg = format!(
                     "Started command '{cmd}' in PTY session '{session_id}' (pid: {pid_str}, rows: {rows}, cols: {cols}{recording_str}{reporting_str})"
                 );
+                if params.live.unwrap_or(false) {
+                    let command = command_line(&params.command, &params.args);
+                    match self.watch_live(session_id, &command).await {
+                        Ok(url) => {
+                            let _ = write!(msg, ", watch live at {url}");
+                        }
+                        Err(e) => {
+                            let _ = write!(msg, ", but the live viewer is unavailable: {e:#}");
+                        }
+                    }
+                } else {
+                    self.forget_live(session_id);
+                }
                 Ok(CallToolResult::success(vec![
                     rmcp::model::ContentBlock::text(msg),
                 ]))
@@ -771,6 +817,9 @@ impl ShadowPtyServer {
         Parameters(params): Parameters<TuiEndParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        if let Some(live) = self.live.get() {
+            live.capture_final_frame(&self.manager, session_id).await;
+        }
         match self.manager.stop_session(session_id).await {
             Ok(stopped) => {
                 let pid_str = stopped

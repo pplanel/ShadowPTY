@@ -371,6 +371,7 @@ async fn test_session_tools_route_by_session_id() {
             record_path: None,
             report_path: None,
             session_id: Some("tool-sess".to_string()),
+            live: None,
         }))
         .await
         .expect("tool call ok");

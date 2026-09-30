@@ -35,6 +35,7 @@ ShadowPTY closes that gap. The assistant gets eyes (the screen, with colors), ha
 - **Check a flow without setting anything up.** "Walk through the onboarding wizard and screenshot each step."
 - **Review what users actually see**: colors, layout, error messages, at a real terminal size.
 - **Get artifacts you can share**: PNG screenshots for the ticket, a replayable recording for the demo.
+- **Watch it happen**: ask for a live session and open the link in your browser to see the screen change, each key the assistant presses and each check pass or fail, as it works.
 
 ### QA and TDD practitioners
 - **Write the test before the feature** in plain language: *"When I press `q`, a confirmation dialog appears with 'Quit? (y/n)' highlighted."* Let the assistant run it red, implement, run it green.
@@ -89,6 +90,7 @@ What the assistant "reads" is the screen as text, with colors kept:
 | 🎬 **Recordings** | Standard [asciinema](https://asciinema.org) files with real timing |
 | ✅ **Test reports** | A JSON Lines log of every check (passed or failed, and how long it took) and a summary, e.g. `5 checks, 4 passed, 1 failed` |
 | 🚦 **Send signals** | Interrupt, terminate, pause and resume the app (`INT`, `TERM`, `STOP`, `CONT`, …) without closing it |
+| 📺 **Watch live** | A private local web page showing the screen and every input and check as the assistant works |
 | 📐 **Resize** | Test how the app adapts to small and large windows |
 | 🧩 **Several apps at once** | Each in its own named session |
 | 🧹 **Clean shutdown** | Closing a session stops the app and anything it spawned |
