@@ -12,8 +12,8 @@ use tokio::sync::Mutex;
 
 use crate::screen::Screen;
 pub use crate::session::{
-    DEFAULT_SESSION_ID, ExpectTarget, Expectation, ProcessInfo, PtyConfig, Script, ScriptOutcome,
-    ScriptStep, SessionSummary, TuiSession,
+    DEFAULT_SESSION_ID, ExitStatus, ExpectTarget, Expectation, ProcessExit, ProcessInfo, PtyConfig,
+    Script, ScriptOutcome, ScriptStep, SessionSummary, TuiSession,
 };
 
 fn no_session(session_id: &str) -> String {
@@ -110,6 +110,21 @@ impl PtyManager {
     /// Waits for an expectation in the default session.
     pub async fn expect(&self, expectation: &Expectation) -> Result<String> {
         self.expect_session(DEFAULT_SESSION_ID, expectation).await
+    }
+
+    /// Waits for the session's process to exit and returns its status and unread output.
+    pub async fn wait_exit_session(
+        &self,
+        session_id: &str,
+        timeout: Duration,
+    ) -> Result<ProcessExit> {
+        let session = self.get_session(session_id).await?;
+        session.wait_exit(timeout).await
+    }
+
+    /// Waits for the default session's process to exit.
+    pub async fn wait_exit(&self, timeout: Duration) -> Result<ProcessExit> {
+        self.wait_exit_session(DEFAULT_SESSION_ID, timeout).await
     }
 
     /// Waits until the session produces no output for `quiet_period`.

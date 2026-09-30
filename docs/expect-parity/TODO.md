@@ -6,17 +6,18 @@ Legend: `[ ]` to do, `[~]` in progress, `[x]` done.
 
 ## Phase 1: Waiting and matching
 
-### 1.1 Wait for exit and exit status `[~]`
+### 1.1 Wait for exit and exit status `[x]`
 - [x] Recorder writes the exit event only once (`AsciicastRecorder::record_exit`).
-- [ ] `ExitStatus` (`exit_code` / `signal` / `unknown`), captured by `watch_child_exit` from `waitid` (still `WNOWAIT`) into a `watch` channel.
-- [ ] Reader records the real exit status after draining output, before closing the stream; killed processes record `128 + signal`.
-- [ ] Remove the hard-coded exit code `0` from `terminate` and `Drop`.
-- [ ] `TuiSession::exit_status()` and `wait_exit(timeout)` → status + unread output (marks it read).
-- [ ] `PtyManager::wait_exit_session` / `wait_exit`.
-- [ ] `tui_wait_exit { session_id?, timeout_ms? = 10000 }`.
-- [ ] `tui_list_sessions` includes `exit_status`.
-- [ ] Tests: exit code, killed by signal, timeout while running, recording ends with the real code, list shows status.
-- [ ] Docs: reference (new tool, list output), README capabilities; tick the recording item in the root `TODO.md`.
+- [x] `ExitStatus` (`exit_code` / `signal` / `unknown`), captured by `watch_child_exit` from `waitid` (still `WNOWAIT`) into a `watch` channel.
+- [x] Reader records the real exit status after draining output, before closing the stream; killed processes record `128 + signal`.
+- [x] Remove the hard-coded exit code `0` from `terminate` and `Drop`.
+- [x] `TuiSession::exit_status()` and `wait_exit(timeout)` → status + unread output (marks it read).
+- [x] `PtyManager::wait_exit_session` / `wait_exit`.
+- [x] `tui_wait_exit { session_id?, timeout_ms? = 10000 }`.
+- [x] `tui_list_sessions` includes `exit_status`.
+- [x] `TuiSession::drop` waits for the exit report before `Pty` reaps the child (Linux lost the status 13/30 runs without it).
+- [x] Tests (`tests/exit_test.rs`): exit code, killed by signal, timeout while running, recording ends with the real code, recording after `tui_end`, tools.
+- [x] Docs: reference (new tool, list output), README capabilities; tick the recording item in the root `TODO.md`.
 
 ### 1.2 First of several patterns `[ ]`
 - [ ] `SessionOutput::expect_any(&[Pattern])`: earliest match in unread output wins; ties go to the first pattern.

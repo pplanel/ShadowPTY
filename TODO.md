@@ -21,7 +21,7 @@ The plan is in `docs/proposals/RFC-single-emulator-core.md`. The work is stacked
 
 ## Smaller issues
 
-- [ ] Record the real exit code or signal: `TuiSession`'s `Drop` still writes exit code `0` to the recording.
+- [x] Record the real exit code or signal: the exit watcher captures the status and the reader records it after the last output (`feat/expect-parity`, parity item 1.1).
 - [x] Pick one terminal emulator: alacritty `Term` only.
 - [x] rust-expect-specific issues (`SessionBuilder` arguments, `pid()` returning `0`, missing process-group kill, redundant `#[serde(default)]`): gone with rust-expect.
 

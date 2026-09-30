@@ -42,6 +42,7 @@ struct CastHeader<'a> {
 pub struct AsciicastRecorder {
     writer: BufWriter<File>,
     last_event_time: Instant,
+    exit_recorded: bool,
 }
 
 impl AsciicastRecorder {
@@ -86,6 +87,7 @@ impl AsciicastRecorder {
         Ok(Self {
             writer,
             last_event_time: Instant::now(),
+            exit_recorded: false,
         })
     }
 
@@ -127,8 +129,13 @@ impl AsciicastRecorder {
         self.record_event("r", &data)
     }
 
-    /// Records session exit (`"x"` event with exit status string).
+    /// Records session exit (`"x"` event with exit status string). Only the first call writes
+    /// an event, so the recording ends with a single exit status.
     pub fn record_exit(&mut self, exit_code: i32) -> Result<()> {
+        if self.exit_recorded {
+            return Ok(());
+        }
+        self.exit_recorded = true;
         let data = exit_code.to_string();
         self.record_event("x", &data)
     }

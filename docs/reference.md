@@ -13,7 +13,7 @@ Tool parameters, screen format, recording format and architecture. For an overvi
 
 ## Tools
 
-ShadowPTY exposes 11 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
+ShadowPTY exposes 12 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
 
 | Tool | What it does |
 | :--- | :--- |
@@ -22,11 +22,12 @@ ShadowPTY exposes 11 tools. Every tool except `tui_list_sessions` takes an optio
 | [`tui_paste`](#tui_paste) | Send text as one bracketed paste |
 | [`tui_expect`](#tui_expect) | Wait for a literal or regex in new output or on screen |
 | [`tui_wait_stable`](#tui_wait_stable) | Wait until output goes quiet |
+| [`tui_wait_exit`](#tui_wait_exit) | Wait for the process to exit; get its exit code or signal |
 | [`tui_run_script`](#tui_run_script) | Run shell commands one by one, collecting each output |
 | [`tui_read`](#tui_read) | Read the screen as tagged text |
 | [`tui_take_screenshot`](#tui_take_screenshot) | Render the screen to PNG or SVG |
 | [`tui_resize`](#tui_resize) | Resize the terminal |
-| [`tui_list_sessions`](#tui_list_sessions) | List running sessions |
+| [`tui_list_sessions`](#tui_list_sessions) | List sessions and whether their process has exited |
 | [`tui_end`](#tui_end) | Stop a session and its whole process group |
 
 All waits are capped at 120 seconds.
@@ -89,6 +90,18 @@ Waits until `pattern` appears, so the agent doesn't need sleep-and-poll loops.
 
 Waits until no output has arrived for `quiet_period_ms` (default `100`), up to `max_wait_ms` (default `3000`). Returns immediately if the process has exited. Use it before `tui_read` or a screenshot.
 
+### `tui_wait_exit`
+
+Waits until the session's process exits (`timeout_ms`, default `10000`) and reports how it ended, plus any output not yet returned by `tui_read` or `tui_expect` (the last 4000 characters). Returns immediately if the process has already exited. The session stays open, so `tui_read` and screenshots still show the final screen until `tui_end`.
+
+```text
+Process in session 'default' exited with code 3.
+Unread output:
+Build failed: 2 errors
+```
+
+A process killed by a signal reports e.g. `killed by signal 9 (SIGKILL)`. If it's still running at the timeout, the call fails with the latest output.
+
 ### `tui_run_script`
 
 Runs `commands` one at a time in a shell session, waiting for `prompt_pattern` (default `"$"`, set `is_regex` for a regex) after each, with `timeout_ms` (default `30000`) per command. Returns each command's output. Earlier output is ignored and each command's echo is skipped, so a command that contains the prompt text doesn't end its own wait. Stops at the first command whose prompt doesn't show up.
@@ -127,10 +140,12 @@ Resizes the PTY and the screen (`rows`, `cols`), to test how an app re-lays out.
 
 ```json
 [
-  { "id": "default", "command": "bash", "pid": 12001, "rows": 24, "cols": 80, "recording": false },
-  { "id": "htop", "command": "htop", "pid": 12345, "rows": 43, "cols": 155, "recording": true }
+  { "id": "build", "command": "sh", "pid": 12001, "rows": 43, "cols": 155, "recording": false, "exit_status": { "exit_code": 0 } },
+  { "id": "htop", "command": "htop", "pid": 12345, "rows": 43, "cols": 155, "recording": true, "exit_status": null }
 ]
 ```
+
+`exit_status` is `null` while the process runs, then `{ "exit_code": N }`, `{ "signal": N }`, or `"unknown"` if the status couldn't be read.
 
 ### `tui_end`
 
@@ -162,7 +177,7 @@ Default foreground and background carry no tag.
 
 ## Recording
 
-Pass `record_path` to `tui_start` and the session is written as [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/): output (`o`), input (`i`), resizes (`r`) and exit (`x`), with timestamps taken when the output was produced. The reader runs continuously, so recordings keep real timing even while the agent is idle.
+Pass `record_path` to `tui_start` and the session is written as [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/): output (`o`), input (`i`), resizes (`r`) and exit (`x`, the real exit code, or `128 + signal` for a killed process, e.g. `137` after `tui_end`), with timestamps taken when the output was produced. The reader runs continuously, so recordings keep real timing even while the agent is idle.
 
 ```json
 {"version": 3, "term": {"cols": 155, "rows": 43, "type": "xterm-256color"}, "timestamp": 1726960000, "command": "htop"}
@@ -249,5 +264,4 @@ CI runs the first three on macOS and Linux. Tests spawn real processes; screens 
 
 - macOS and Linux only (no Windows ConPTY).
 - `TERM`/`COLORTERM` aren't set for the child yet, so it inherits them from the MCP host, and terminal queries (cursor position, device attributes, color queries) aren't answered.
-- Recordings currently always end with exit code `0`.
 - Visible screen only; scrollback isn't exposed.

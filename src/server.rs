@@ -137,6 +137,15 @@ pub struct TuiEndParams {
     pub session_id: Option<String>,
 }
 
+/// Parameters for `tui_wait_exit` tool.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TuiWaitExitParams {
+    /// Maximum time to wait in milliseconds (default 10000, at most 120000).
+    pub timeout_ms: Option<u64>,
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
 /// Parameters for `tui_list_sessions` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TuiListSessionsParams {}
@@ -302,6 +311,33 @@ impl ShadowPtyServer {
         )
     }
 
+    /// Waits for the process to exit and reports its exit code or signal.
+    #[tool(
+        name = "tui_wait_exit",
+        description = "Waits until the session's process exits and reports how it ended (exit code or signal), plus any output not yet returned by tui_read or tui_expect. Returns immediately if it has already exited. The session stays open for tui_read and screenshots until tui_end."
+    )]
+    pub async fn tui_wait_exit(
+        &self,
+        Parameters(params): Parameters<TuiWaitExitParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let timeout = wait_duration(params.timeout_ms, 10_000);
+
+        Ok(
+            match self.manager.wait_exit_session(session_id, timeout).await {
+                Ok(exit) => {
+                    let mut text = format!("Process in session '{session_id}' {}.", exit.status);
+                    if !exit.output.trim().is_empty() {
+                        text.push_str("\nUnread output:\n");
+                        text.push_str(exit.output.trim_end());
+                    }
+                    text_result(text)
+                }
+                Err(e) => error_result(format!("Wait exit failed: {e:#}")),
+            },
+        )
+    }
+
     /// Waits until the application stops producing output.
     #[tool(
         name = "tui_wait_stable",
@@ -435,7 +471,7 @@ impl ShadowPtyServer {
     /// Lists all currently active pseudo-terminal sessions.
     #[tool(
         name = "tui_list_sessions",
-        description = "Lists all active PTY sessions with their process id, dimensions, and recording state."
+        description = "Lists all active PTY sessions with their process id, dimensions, recording state, and exit_status (null while running, otherwise {\"exit_code\": N}, {\"signal\": N} or \"unknown\")."
     )]
     pub async fn tui_list_sessions(
         &self,

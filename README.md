@@ -84,7 +84,7 @@ What the assistant "reads" is the screen as text, with colors kept:
 | :--- | :--- |
 | ⌨️ **Type and press keys** | Text, Enter, arrows, F-keys, Ctrl/Alt combos, pasted scripts |
 | 👀 **Read the screen** | Text with colors and styles, exactly as laid out |
-| ⏳ **Wait for things** | Until some text appears, or until the screen settles — no fixed sleeps |
+| ⏳ **Wait for things** | Until some text appears, the screen settles, or the app exits (with its exit code) — no fixed sleeps |
 | 📸 **Screenshots** | PNG the assistant can see, or SVG for pixel-exact comparisons |
 | 🎬 **Recordings** | Standard [asciinema](https://asciinema.org) files with real timing |
 | 📐 **Resize** | Test how the app adapts to small and large windows |

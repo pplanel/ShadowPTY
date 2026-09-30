@@ -20,9 +20,9 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 
 ## Architecture
 
-- `src/server.rs`: rmcp tool definitions (11 tools); thin wrappers over `PtyManager`.
+- `src/server.rs`: rmcp tool definitions (12 tools); thin wrappers over `PtyManager`.
 - `src/pty_manager.rs`: `PtyManager`, the map of sessions keyed by `session_id` (default `"default"`).
-- `src/session.rs`: `TuiSession` owns the `alacritty_terminal::tty::Pty`, one alacritty `Term`, a `SessionOutput`, an optional recorder, **one reader thread** (`run_pty_reader`) and a child-exit watcher (`watch_child_exit`). Input, paste, expect, wait-stable, run-script, resize, snapshot and `terminate` live here.
+- `src/session.rs`: `TuiSession` owns the `alacritty_terminal::tty::Pty`, one alacritty `Term`, a `SessionOutput`, an optional recorder, **one reader thread** (`run_pty_reader`) and a child-exit watcher (`watch_child_exit`, which also publishes the `ExitStatus`). Input, paste, expect, wait-stable, run-script, resize, snapshot and `terminate` live here.
 - `src/output.rs`: raw output buffer (bounded, 1 MiB) with a read position and a `watch` revision counter; `Pattern`, stream expect, wait-stable.
 - `src/screen.rs`: `Screen` snapshot copied from the `Term`; tagged text (`tui_read`) and plain text (screen-mode expect).
 - `src/palette.rs`: base palette, app color overrides (OSC 4/10/11/12), dim/inverse/hidden resolution. Shared by text and screenshots.
@@ -37,6 +37,7 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 - **Stream expect never re-matches seen output**: a match consumes up to its end, and `tui_read` marks everything read.
 - The reader flushes an unterminated synchronized-output frame (`?2026`) after vte's sync timeout and must wake waiters when the screen changes without new output (`SessionOutput::notify_screen_changed`).
 - The reader keeps a PTY slave fd open until it's done: macOS discards unread output ~0.5 s after the last slave fd closes. Child exit is signalled by `watch_child_exit` (`waitid` with `WNOWAIT`, so `Pty`'s `Drop` still reaps).
+- The exit status comes from `waitid` in the watcher and is lost once the child is reaped, and `Pty`'s `Drop` reaps it. So `TuiSession::drop` waits for the exit report before its fields drop, and the reader records the exit event after the last output.
 - Stopping a session kills the whole process group and reaps the child. `terminate` waits at most `READER_JOIN_TIMEOUT` for the reader (see the open Linux issue in `TODO.md`).
 - Logging goes to stderr only; stdout is the MCP JSON-RPC channel.
 - The server must survive a crashing child and report errors as tool errors; no panics in library code.

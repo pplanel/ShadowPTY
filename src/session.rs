@@ -16,9 +16,10 @@ use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 use anyhow::{Context, Result};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
-use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+use rustix::process::{Pid, WaitId, WaitIdOptions, WaitIdStatus, waitid};
 use rustix_openpty::openpty;
 use rustix_openpty::rustix::termios::Winsize;
+use tokio::sync::watch;
 
 use crate::input::parse_input_keys;
 use crate::output::{Pattern, SessionOutput};
@@ -37,6 +38,15 @@ const ERROR_TAIL_CHARS: usize = 500;
 
 /// How long `terminate` waits for the reader thread before giving up on it.
 const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the reader waits for the exit watcher after the PTY closes, to record the status.
+const EXIT_STATUS_WAIT: Duration = Duration::from_secs(1);
+
+/// How long `wait_exit` keeps waiting for output to drain after the child exits.
+const EXIT_DRAIN_GRACE: Duration = Duration::from_millis(500);
+
+/// How much unread output `wait_exit` returns.
+const EXIT_OUTPUT_TAIL_CHARS: usize = 4000;
 
 /// Information about a running process session.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -57,6 +67,78 @@ pub struct SessionSummary {
     pub rows: u16,
     pub cols: u16,
     pub recording: bool,
+    /// `None` while the process is running.
+    pub exit_status: Option<ExitStatus>,
+}
+
+/// How the session's process ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitStatus {
+    /// Exited normally with this code.
+    #[serde(rename = "exit_code")]
+    Code(i32),
+    /// Killed by this signal number.
+    Signal(i32),
+    /// Exited, but the status was no longer available (the child was already reaped).
+    Unknown,
+}
+
+impl ExitStatus {
+    fn from_waitid(status: &WaitIdStatus) -> Self {
+        status
+            .exit_status()
+            .map(Self::Code)
+            .or_else(|| status.terminating_signal().map(Self::Signal))
+            .unwrap_or(Self::Unknown)
+    }
+
+    /// Code written to the recording: the exit code, or `128 + signal` as shells report it.
+    #[must_use]
+    pub const fn recorded_code(self) -> i32 {
+        match self {
+            Self::Code(code) => code,
+            Self::Signal(signal) => 128 + signal,
+            Self::Unknown => -1,
+        }
+    }
+}
+
+impl std::fmt::Display for ExitStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Code(code) => write!(f, "exited with code {code}"),
+            Self::Signal(signal) => match signal_name(*signal) {
+                Some(name) => write!(f, "killed by signal {signal} ({name})"),
+                None => write!(f, "killed by signal {signal}"),
+            },
+            Self::Unknown => write!(f, "exited (status unavailable)"),
+        }
+    }
+}
+
+/// Names of common signals whose numbers are the same on Linux and macOS.
+const fn signal_name(signal: i32) -> Option<&'static str> {
+    Some(match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        _ => return None,
+    })
+}
+
+/// Result of waiting for the process to exit.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ProcessExit {
+    pub status: ExitStatus,
+    /// Output the agent hadn't seen yet, as plain text (the last part if it's long).
+    pub output: String,
 }
 
 /// Where expect searches for its pattern.
@@ -162,6 +244,7 @@ struct ReaderSinks {
     output: Arc<SessionOutput>,
     recorder: SharedRecorder,
     shutdown_flag: Arc<AtomicBool>,
+    exit: watch::Receiver<Option<ExitStatus>>,
 }
 
 fn run_pty_reader(mut reader: File, child_exit: &PipeReader, sinks: &ReaderSinks) {
@@ -170,6 +253,7 @@ fn run_pty_reader(mut reader: File, child_exit: &PipeReader, sinks: &ReaderSinks
         output,
         recorder,
         shutdown_flag,
+        exit,
     } = sinks;
     let mut buffer = [0u8; 4096];
     let mut parser: Processor<StdSyncHandler> = Processor::new();
@@ -213,7 +297,32 @@ fn run_pty_reader(mut reader: File, child_exit: &PipeReader, sinks: &ReaderSinks
             }
         }
     }
+    // Recorded before closing the stream, so the exit event follows the last output and
+    // `wait_exit` sees a complete recording
+    record_exit_status(child_exit, exit, recorder);
     output.close();
+}
+
+/// Writes the child's exit status to the recording. The PTY can close slightly before the exit
+/// watcher reports, so waits up to `EXIT_STATUS_WAIT` for it.
+fn record_exit_status(
+    child_exit: &PipeReader,
+    exit: &watch::Receiver<Option<ExitStatus>>,
+    recorder: &SharedRecorder,
+) {
+    if !recorder.lock().is_ok_and(|rec| rec.is_some()) {
+        return;
+    }
+    if exit.borrow().is_none() {
+        wait_for_exit_report(child_exit);
+    }
+    let status = *exit.borrow();
+    if let Some(status) = status
+        && let Ok(mut rec_guard) = recorder.lock()
+        && let Some(rec) = rec_guard.as_mut()
+    {
+        let _ = rec.record_exit(status.recorded_code());
+    }
 }
 
 enum ReaderEvent {
@@ -251,21 +360,106 @@ fn next_event(
     }
 }
 
-/// Blocks until the child exits, then closes `notifier` to wake the reader. Uses `WNOWAIT` so
-/// the child is left for `Pty`'s `Drop` to reap.
-fn watch_child_exit(pid: u32, notifier: PipeWriter) {
-    let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
-        return;
-    };
-    // Any error other than EINTR means the child is gone (e.g. already reaped)
+/// Blocks until the child exits, publishes its status, then closes `notifier` to wake the
+/// reader. Uses `WNOWAIT` so the child is left for `Pty`'s `Drop` to reap.
+fn watch_child_exit(pid: u32, exit: &watch::Sender<Option<ExitStatus>>, notifier: PipeWriter) {
+    let status = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .map_or(ExitStatus::Unknown, wait_for_child);
+    exit.send_replace(Some(status));
+    drop(notifier);
+}
+
+/// Blocks until the exit watcher has published the child's status (it closes the pipe right
+/// after), for at most `EXIT_STATUS_WAIT`.
+fn wait_for_exit_report(child_exit: &PipeReader) {
+    let timeout = Timespec::try_from(EXIT_STATUS_WAIT).ok();
+    let mut fds = [PollFd::new(child_exit, PollFlags::IN)];
     while matches!(
-        waitid(
-            WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT
-        ),
+        poll(&mut fds, timeout.as_ref()),
         Err(rustix::io::Errno::INTR)
     ) {}
-    drop(notifier);
+}
+
+/// Opens a PTY of the configured size and spawns the command in it. Also returns a second handle
+/// on the PTY slave: macOS discards unread output shortly after the last slave fd closes, so the
+/// reader keeps this one open until it has drained everything the child wrote.
+fn spawn_in_pty(config: &PtyConfig<'_>) -> Result<(Pty, std::os::fd::OwnedFd)> {
+    let options = Options {
+        shell: Some(Shell::new(config.command.to_string(), config.args.to_vec())),
+        ..Options::default()
+    };
+    let opened = openpty(
+        None,
+        Some(&Winsize {
+            ws_row: config.rows,
+            ws_col: config.cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }),
+    )
+    .context("failed to allocate pseudo-terminal")?;
+    let slave_keepalive = opened
+        .user
+        .try_clone()
+        .context("failed to clone pty slave")?;
+    let pty = tty::from_fd(&options, 0, opened.controller, opened.user)
+        .map_err(|e| anyhow::anyhow!("failed to spawn '{}': {e}", config.command))?;
+    Ok((pty, slave_keepalive))
+}
+
+/// Creates the asciicast recorder if the config asks for a recording.
+fn create_recorder(config: &PtyConfig<'_>) -> Result<SharedRecorder> {
+    let recorder = match config.record_path {
+        Some(path) => Some(
+            AsciicastRecorder::create(path, config.cols, config.rows, Some(config.command))
+                .with_context(|| format!("failed to initialize recorder with path '{path}'"))?,
+        ),
+        None => None,
+    };
+    Ok(Arc::new(Mutex::new(recorder)))
+}
+
+/// Handles on the thread that watches for the child's exit.
+struct ExitWatch {
+    /// Becomes readable once the exit is reported; used by the reader.
+    child_exit: PipeReader,
+    /// A second handle on the same pipe, for the session.
+    exit_reported: PipeReader,
+    status: watch::Receiver<Option<ExitStatus>>,
+}
+
+/// Starts the thread that watches for the child's exit.
+fn spawn_exit_watcher(session_id: &str, pid: u32) -> Result<ExitWatch> {
+    let (child_exit, notifier) = std::io::pipe().context("failed to create exit pipe")?;
+    let exit_reported = child_exit
+        .try_clone()
+        .context("failed to clone exit pipe")?;
+    let (exit_tx, status) = watch::channel(None);
+    thread::Builder::new()
+        .name(format!("shadowpty-exit-{session_id}"))
+        .spawn(move || watch_child_exit(pid, &exit_tx, notifier))
+        .context("failed to spawn child exit watcher")?;
+    Ok(ExitWatch {
+        child_exit,
+        exit_reported,
+        status,
+    })
+}
+
+fn wait_for_child(pid: Pid) -> ExitStatus {
+    loop {
+        match waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+        ) {
+            Err(rustix::io::Errno::INTR) => {}
+            Ok(Some(status)) => return ExitStatus::from_waitid(&status),
+            // Any other error means the child is gone (e.g. already reaped)
+            Ok(None) | Err(_) => return ExitStatus::Unknown,
+        }
+    }
 }
 
 /// An autonomous, self-contained interactive PTY session.
@@ -278,41 +472,22 @@ pub struct TuiSession {
     recorder: SharedRecorder,
     shutdown_flag: Arc<AtomicBool>,
     reader_handle: Mutex<Option<JoinHandle<()>>>,
+    exit: watch::Receiver<Option<ExitStatus>>,
+    /// Readable once the exit watcher has published the status.
+    exit_reported: PipeReader,
 }
 
 impl TuiSession {
     /// Allocates a PTY, spawns the command in it and starts the background reader thread.
     pub fn spawn(session_id: &str, config: &PtyConfig<'_>) -> Result<Self> {
-        let options = Options {
-            shell: Some(Shell::new(config.command.to_string(), config.args.to_vec())),
-            ..Options::default()
-        };
-
-        let opened = openpty(
-            None,
-            Some(&Winsize {
-                ws_row: config.rows,
-                ws_col: config.cols,
-                ws_xpixel: 0,
-                ws_ypixel: 0,
-            }),
-        )
-        .context("failed to allocate pseudo-terminal")?;
-        // macOS discards unread output shortly after the last slave fd closes, so the reader
-        // keeps one open until it has drained everything the child wrote
-        let slave_keepalive = opened
-            .user
-            .try_clone()
-            .context("failed to clone pty slave")?;
-        let pty = tty::from_fd(&options, 0, opened.controller, opened.user)
-            .map_err(|e| anyhow::anyhow!("failed to spawn '{}': {e}", config.command))?;
+        let (pty, slave_keepalive) = spawn_in_pty(config)?;
 
         let pid = pty.child().id();
-        let (child_exit, exit_notifier) = std::io::pipe().context("failed to create exit pipe")?;
-        thread::Builder::new()
-            .name(format!("shadowpty-exit-{session_id}"))
-            .spawn(move || watch_child_exit(pid, exit_notifier))
-            .context("failed to spawn child exit watcher")?;
+        let ExitWatch {
+            child_exit,
+            exit_reported,
+            status: exit,
+        } = spawn_exit_watcher(session_id, pid)?;
 
         let pty_reader = pty.file().try_clone().context("failed to clone pty file")?;
         let pty_writer = pty.file().try_clone().context("failed to clone pty file")?;
@@ -334,20 +509,14 @@ impl TuiSession {
         let output = Arc::new(SessionOutput::new());
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-        let recorder = if let Some(path) = config.record_path {
-            let rec =
-                AsciicastRecorder::create(path, config.cols, config.rows, Some(config.command))
-                    .with_context(|| format!("failed to initialize recorder with path '{path}'"))?;
-            Arc::new(Mutex::new(Some(rec)))
-        } else {
-            Arc::new(Mutex::new(None))
-        };
+        let recorder = create_recorder(config)?;
 
         let sinks = ReaderSinks {
             terminal: Arc::clone(&terminal),
             output: Arc::clone(&output),
             recorder: Arc::clone(&recorder),
             shutdown_flag: Arc::clone(&shutdown_flag),
+            exit: exit.clone(),
         };
         let reader_handle = thread::Builder::new()
             .name(format!("shadowpty-reader-{session_id}"))
@@ -372,6 +541,8 @@ impl TuiSession {
             recorder,
             shutdown_flag,
             reader_handle: Mutex::new(Some(reader_handle)),
+            exit,
+            exit_reported,
         })
     }
 
@@ -392,7 +563,43 @@ impl TuiSession {
             rows: info.rows,
             cols: info.cols,
             recording: self.recorder.lock().is_ok_and(|rec| rec.is_some()),
+            exit_status: self.exit_status(),
         }
+    }
+
+    /// How the process ended, or `None` while it's running.
+    #[must_use]
+    pub fn exit_status(&self) -> Option<ExitStatus> {
+        *self.exit.borrow()
+    }
+
+    /// Waits for the process to exit, then returns its status and the output the agent hadn't
+    /// seen yet (marked as read).
+    pub async fn wait_exit(&self, timeout: Duration) -> Result<ProcessExit> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut exit = self.exit.clone();
+        let status = match tokio::time::timeout_at(deadline, exit.wait_for(Option::is_some)).await {
+            Ok(Ok(status)) => status.unwrap_or(ExitStatus::Unknown),
+            // The watcher is gone without reporting, so the status can't be known
+            Ok(Err(_)) => ExitStatus::Unknown,
+            Err(_) => anyhow::bail!(
+                "process still running after {timeout:?}. Unread output (last {ERROR_TAIL_CHARS} chars):\n{}",
+                self.output.unread_tail(ERROR_TAIL_CHARS)
+            ),
+        };
+
+        // Let the reader drain what the child wrote before exiting
+        let drain = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .max(EXIT_DRAIN_GRACE);
+        let _ = self
+            .output
+            .wait_for(drain, || self.output.is_eof().then_some(()))
+            .await;
+
+        let output = self.output.unread_tail(EXIT_OUTPUT_TAIL_CHARS);
+        self.output.mark_all_read();
+        Ok(ProcessExit { status, output })
     }
 
     /// Writes raw bytes to the PTY and records them.
@@ -666,10 +873,12 @@ impl TuiSession {
             }
         }
 
-        if let Ok(mut rec_guard) = self.recorder.lock()
+        // Normally already recorded by the reader; covers a reader that didn't finish in time
+        if let Some(status) = self.exit_status()
+            && let Ok(mut rec_guard) = self.recorder.lock()
             && let Some(rec) = rec_guard.as_mut()
         {
-            let _ = rec.record_exit(0);
+            let _ = rec.record_exit(status.recorded_code());
         }
 
         Ok(())
@@ -689,10 +898,10 @@ impl Drop for TuiSession {
                 .status();
         }
         self.shutdown_flag.store(true, Ordering::SeqCst);
-        if let Ok(mut rec_guard) = self.recorder.lock()
-            && let Some(rec) = rec_guard.as_mut()
-        {
-            let _ = rec.record_exit(0);
+        // `Pty`'s `Drop` reaps the child right after this, which would lose its exit status, so
+        // let the watcher read it first; the reader thread then records it
+        if self.exit_status().is_none() {
+            wait_for_exit_report(&self.exit_reported);
         }
     }
 }
