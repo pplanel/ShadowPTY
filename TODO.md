@@ -35,3 +35,7 @@ The plan is in `docs/proposals/RFC-single-emulator-core.md`. The work is stacked
 ## API parity with `rust-expect`
 
 In progress on `feat/expect-parity`: plan in [`docs/expect-parity/ROADMAP.md`](docs/expect-parity/ROADMAP.md), tasks in [`docs/expect-parity/TODO.md`](docs/expect-parity/TODO.md).
+
+## Live viewer
+
+- [x] **Feed report events to the live viewer**: `forward_report_events` sends the report's history, then each new event; `tests/live_test.rs` checks a real session's `start`, `expect`, `input` and `summary` reach a viewer.

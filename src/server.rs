@@ -1,6 +1,7 @@
 //! MCP Tool Router implementation for `ShadowPTY`.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::{
@@ -11,10 +12,13 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::live::LiveServer;
 use crate::output::{Pattern, Syntax};
 use crate::pty_manager::{
-    DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, Script,
+    DEFAULT_SESSION_ID, ExpectMatch, ExpectTarget, Expectation, PtyManager, ScreenshotTaken,
+    Script, SignalTarget,
 };
+use crate::signals::{parse_signal, signal_name};
 
 /// Upper limit for any wait, so a single call can't hang the agent indefinitely.
 const MAX_WAIT_MS: u64 = 120_000;
@@ -141,7 +145,7 @@ fn parse_patterns(
 }
 
 /// Parameters for `tui_start` tool.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TuiStartParams {
     /// The executable command to spawn (e.g. "top", "htop", "bash").
     pub command: String,
@@ -154,8 +158,16 @@ pub struct TuiStartParams {
     pub cols: Option<u16>,
     /// Optional filesystem path where session will be recorded in asciicast v3 format.
     pub record_path: Option<String>,
+    /// Optional filesystem path for a JSON Lines report of the session: inputs, every check
+    /// (expect, waits, scripts) with pass/fail and timing, screenshots, the exit status, and a
+    /// summary written when the session ends.
+    pub report_path: Option<String>,
     /// Identifier for this session (defaults to "default"). Starting an existing id replaces that session.
     pub session_id: Option<String>,
+    /// If true, the session can be watched live in a browser: the reply includes a link to a
+    /// local, view-only page showing the screen and a timeline of inputs and checks
+    /// (default false). The link contains a secret token; hand it to the person, don't open it.
+    pub live: Option<bool>,
 }
 
 /// Parameters for `tui_input` tool.
@@ -163,6 +175,38 @@ pub struct TuiStartParams {
 pub struct TuiInputParams {
     /// String containing keystrokes and symbolic tokens (e.g. "<ENTER>", "<ESC>", "<UP>", "<CTRL+C>").
     pub keys: String,
+    /// Target session identifier (defaults to "default").
+    pub session_id: Option<String>,
+}
+
+/// Which processes `tui_signal` signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SignalTargetParam {
+    /// The terminal's foreground process group, like Ctrl+C in a real terminal (the default).
+    Foreground,
+    /// Only the process started by `tui_start` (e.g. the shell, not the job it runs).
+    Process,
+}
+
+impl From<SignalTargetParam> for SignalTarget {
+    fn from(target: SignalTargetParam) -> Self {
+        match target {
+            SignalTargetParam::Foreground => Self::Foreground,
+            SignalTargetParam::Process => Self::Process,
+        }
+    }
+}
+
+/// Parameters for `tui_signal` tool.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct TuiSignalParams {
+    /// Signal name, with or without "SIG": INT, TERM, HUP, QUIT, KILL, TSTP, STOP, CONT, USR1,
+    /// USR2, WINCH, ALRM, PIPE, TTIN, TTOU, and the crash signals ABRT, SEGV, BUS, FPE, TRAP.
+    pub signal: String,
+    /// "foreground" (default): the terminal's foreground process group, as Ctrl+C does.
+    /// "process": only the process started by `tui_start`.
+    pub target: Option<SignalTargetParam>,
     /// Target session identifier (defaults to "default").
     pub session_id: Option<String>,
 }
@@ -304,13 +348,49 @@ pub struct TuiScreenshotParams {
 #[derive(Clone)]
 pub struct ShadowPtyServer {
     manager: PtyManager,
+    /// The live viewer's HTTP server, started on the first `tui_start` with `live: true`.
+    live: Arc<tokio::sync::OnceCell<LiveServer>>,
 }
 
 impl ShadowPtyServer {
     #[must_use]
-    pub const fn new(manager: PtyManager) -> Self {
-        Self { manager }
+    pub fn new(manager: PtyManager) -> Self {
+        Self {
+            manager,
+            live: Arc::new(tokio::sync::OnceCell::new()),
+        }
     }
+
+    /// Adds a screenshot that was rendered (and saved, if it has a path) to the session report.
+    async fn report_screenshot(&self, session_id: &str, shot: ScreenshotTaken<'_>) {
+        // The screenshot is taken either way; a session that ended meanwhile just can't log it
+        let _ = self
+            .manager
+            .record_screenshot_session(session_id, &shot)
+            .await;
+    }
+
+    /// Starts showing a just-started session in the live viewer (starting the viewer if needed)
+    /// and returns its link. `command` is the command line shown on the page.
+    async fn watch_live(&self, session_id: &str, command: &str) -> anyhow::Result<String> {
+        let live = self.live.get_or_try_init(LiveServer::start).await?;
+        live.watch(&self.manager, session_id, command).await
+    }
+
+    /// A session was started without `live`: stop showing whatever ran under its id before.
+    fn forget_live(&self, session_id: &str) {
+        if let Some(live) = self.live.get() {
+            live.forget(session_id);
+        }
+    }
+}
+
+/// The command line as shown to the person watching.
+fn command_line(command: &str, args: &[String]) -> String {
+    std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[tool_router(server_handler)]
@@ -318,7 +398,7 @@ impl ShadowPtyServer {
     /// Spawns a new process in a native pseudo-terminal (PTY) and initializes the screen buffer.
     #[tool(
         name = "tui_start",
-        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file. Use session_id to run several sessions at once."
+        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once. With live: true, the reply includes a local link where a person can watch the session live in a browser (view-only); give them the link, don't open it."
     )]
     pub async fn tui_start(
         &self,
@@ -328,7 +408,8 @@ impl ShadowPtyServer {
         let cols = params.cols.unwrap_or(80);
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
         let config = crate::pty_manager::PtyConfig::new(&params.command, &params.args, rows, cols)
-            .with_record_path(params.record_path.as_deref());
+            .with_record_path(params.record_path.as_deref())
+            .with_report_path(params.report_path.as_deref());
 
         match self.manager.start_session(session_id, &config).await {
             Ok(info) => {
@@ -342,9 +423,26 @@ impl ShadowPtyServer {
                     .record_path
                     .as_ref()
                     .map_or_else(String::new, |path| format!(", recording to '{path}'"));
-                let msg = format!(
-                    "Started command '{cmd}' in PTY session '{session_id}' (pid: {pid_str}, rows: {rows}, cols: {cols}{recording_str})"
+                let reporting_str = params
+                    .report_path
+                    .as_ref()
+                    .map_or_else(String::new, |path| format!(", reporting to '{path}'"));
+                let mut msg = format!(
+                    "Started command '{cmd}' in PTY session '{session_id}' (pid: {pid_str}, rows: {rows}, cols: {cols}{recording_str}{reporting_str})"
                 );
+                if params.live.unwrap_or(false) {
+                    let command = command_line(&params.command, &params.args);
+                    match self.watch_live(session_id, &command).await {
+                        Ok(url) => {
+                            let _ = write!(msg, ", watch live at {url}");
+                        }
+                        Err(e) => {
+                            let _ = write!(msg, ", but the live viewer is unavailable: {e:#}");
+                        }
+                    }
+                } else {
+                    self.forget_live(session_id);
+                }
                 Ok(CallToolResult::success(vec![
                     rmcp::model::ContentBlock::text(msg),
                 ]))
@@ -601,6 +699,46 @@ impl ShadowPtyServer {
         })
     }
 
+    /// Sends a signal to the session's process without ending the session.
+    #[tool(
+        name = "tui_signal",
+        description = "Sends a signal (INT, TERM, HUP, TSTP, STOP, CONT, USR1, KILL, ...) to the running app without ending the session, e.g. to test that it shuts down cleanly on TERM or reloads on HUP. By default it goes to the terminal's foreground process group, like Ctrl+C would; target \"process\" signals only the process tui_start launched. Unlike <CTRL+C> in tui_input, it works even when the app has turned off keyboard signals (raw mode). Follow up with tui_expect or tui_wait_exit to check the effect."
+    )]
+    pub async fn tui_signal(
+        &self,
+        Parameters(params): Parameters<TuiSignalParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let signal = match parse_signal(&params.signal) {
+            Ok(signal) => signal,
+            Err(e) => return Ok(error_result(format!("{e:#}"))),
+        };
+        let target = params
+            .target
+            .map_or(SignalTarget::Foreground, SignalTarget::from);
+        let name =
+            signal_name(signal.as_raw()).unwrap_or_else(|| format!("signal {}", signal.as_raw()));
+
+        Ok(
+            match self
+                .manager
+                .signal_session(session_id, signal, target)
+                .await
+            {
+                Ok(delivery) => {
+                    let whom = match delivery.target {
+                        SignalTarget::Foreground => {
+                            format!("the foreground process group ({})", delivery.id)
+                        }
+                        SignalTarget::Process => format!("process {}", delivery.id),
+                    };
+                    text_result(format!("Sent {name} to {whom} in session '{session_id}'"))
+                }
+                Err(e) => error_result(format!("Failed to send {name}: {e:#}")),
+            },
+        )
+    }
+
     /// Resizes the pseudo-terminal window and updates screen parser dimensions.
     #[tool(
         name = "tui_resize",
@@ -672,22 +810,29 @@ impl ShadowPtyServer {
     /// Terminates a pseudo-terminal session, killing the child process and releasing resources.
     #[tool(
         name = "tui_end",
-        description = "Terminates a pseudo-terminal session, killing the running program and releasing resources."
+        description = "Terminates a pseudo-terminal session, killing the running program and releasing resources. If the session writes a report, finishes it and says how many checks passed and failed."
     )]
     pub async fn tui_end(
         &self,
         Parameters(params): Parameters<TuiEndParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        if let Some(live) = self.live.get() {
+            live.capture_final_frame(&self.manager, session_id).await;
+        }
         match self.manager.stop_session(session_id).await {
-            Ok(info) => {
-                let pid_str = info
+            Ok(stopped) => {
+                let pid_str = stopped
+                    .info
                     .pid
                     .map_or_else(|| "unknown".to_string(), |p| p.to_string());
-                let cmd = &info.command;
-                let msg = format!(
+                let cmd = &stopped.info.command;
+                let mut msg = format!(
                     "Terminated session '{session_id}' for command '{cmd}' (pid: {pid_str})"
                 );
+                if let Some(path) = &stopped.report_path {
+                    let _ = write!(msg, ". Report '{path}': {}", stopped.totals);
+                }
                 Ok(CallToolResult::success(vec![
                     rmcp::model::ContentBlock::text(msg),
                 ]))
@@ -758,9 +903,15 @@ impl ShadowPtyServer {
                 }
             };
 
+            let shot = ScreenshotTaken {
+                format,
+                path: params.output_path.as_deref(),
+                bytes: png_bytes.len(),
+            };
             if let Some(ref path_str) = params.output_path {
                 match tokio::fs::write(path_str, &png_bytes).await {
                     Ok(()) => {
+                        self.report_screenshot(session_id, shot).await;
                         let scale_usize = usize::from(options.scale.clamp(1, 4));
                         let pixel_w = usize::from(snapshot.cols) * (9 * scale_usize);
                         let pixel_h = usize::from(snapshot.rows) * (18 * scale_usize);
@@ -776,16 +927,23 @@ impl ShadowPtyServer {
                     ))),
                 }
             } else {
+                self.report_screenshot(session_id, shot).await;
                 let b64 = crate::rasterizer::png_to_base64(&png_bytes);
                 Ok(image_result(b64, "image/png"))
             }
         } else {
             let theme = crate::screenshot::Theme::default();
             let svg = crate::screenshot::render_svg(&snapshot, &theme);
+            let shot = ScreenshotTaken {
+                format,
+                path: params.output_path.as_deref(),
+                bytes: svg.len(),
+            };
 
             if let Some(ref path_str) = params.output_path {
                 match tokio::fs::write(path_str, svg.as_bytes()).await {
                     Ok(()) => {
+                        self.report_screenshot(session_id, shot).await;
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                         let pixel_w = (f64::from(snapshot.cols) * theme.cell_width) as usize;
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -802,6 +960,7 @@ impl ShadowPtyServer {
                     ))),
                 }
             } else {
+                self.report_screenshot(session_id, shot).await;
                 Ok(text_result(svg))
             }
         }

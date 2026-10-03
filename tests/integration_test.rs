@@ -157,8 +157,8 @@ async fn test_stop_app_terminates_and_reaps_process() {
     assert!(is_process_running(pid), "Process {pid} should be running");
 
     // Terminate the session
-    let stopped_info = manager.stop_app().await.expect("stop_app should succeed");
-    assert_eq!(stopped_info.pid, Some(pid));
+    let stopped = manager.stop_app().await.expect("stop_app should succeed");
+    assert_eq!(stopped.info.pid, Some(pid));
 
     // Session is no longer active in manager
     assert!(!manager.is_active().await);
@@ -369,7 +369,9 @@ async fn test_session_tools_route_by_session_id() {
             rows: Some(10),
             cols: Some(40),
             record_path: None,
+            report_path: None,
             session_id: Some("tool-sess".to_string()),
+            live: None,
         }))
         .await
         .expect("tool call ok");

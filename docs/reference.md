@@ -6,6 +6,8 @@ Tool parameters, screen format, recording format and architecture. For an overvi
 - [Pattern syntax](#pattern-syntax)
 - [Reading the screen](#reading-the-screen)
 - [Recording](#recording)
+- [Session report](#session-report)
+- [Live viewer](#live-viewer)
 - [Architecture](#architecture)
 - [Development](#development)
 - [Limitations](#limitations)
@@ -14,7 +16,7 @@ Tool parameters, screen format, recording format and architecture. For an overvi
 
 ## Tools
 
-ShadowPTY exposes 13 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
+ShadowPTY exposes 14 tools. Every tool except `tui_list_sessions` takes an optional `session_id` (default `"default"`); each session has its own process, screen and recording.
 
 | Tool | What it does |
 | :--- | :--- |
@@ -28,6 +30,7 @@ ShadowPTY exposes 13 tools. Every tool except `tui_list_sessions` takes an optio
 | [`tui_run_script`](#tui_run_script) | Run shell commands one by one, collecting each output |
 | [`tui_read`](#tui_read) | Read the screen as tagged text |
 | [`tui_take_screenshot`](#tui_take_screenshot) | Render the screen to PNG or SVG |
+| [`tui_signal`](#tui_signal) | Send a signal (INT, TERM, HUP, STOP, CONT, …) without ending the session |
 | [`tui_resize`](#tui_resize) | Resize the terminal |
 | [`tui_list_sessions`](#tui_list_sessions) | List sessions and whether their process has exited |
 | [`tui_end`](#tui_end) | Stop a session and its whole process group |
@@ -44,10 +47,20 @@ Spawns `command` in a new pseudo-terminal. Starting a `session_id` that is alrea
 | `args` | string[] | `[]` | Arguments |
 | `rows`, `cols` | integer | `24`, `80` | Terminal size |
 | `record_path` | string | – | Record the session to this `.cast` file |
+| `report_path` | string | – | Write a JSON Lines [session report](#session-report) of every check to this file |
 | `session_id` | string | `"default"` | |
+| `live` | boolean | `false` | Serve a view-only page where a person can watch the session live; see [Live viewer](#live-viewer) |
 
 ```json
-{ "command": "htop", "rows": 43, "cols": 155, "record_path": "/tmp/htop.cast", "session_id": "htop" }
+{ "command": "htop", "rows": 43, "cols": 155, "record_path": "/tmp/htop.cast", "report_path": "/tmp/htop.jsonl", "session_id": "htop" }
+```
+
+The reply names the files, e.g. `…, recording to '/tmp/htop.cast', reporting to '/tmp/htop.jsonl')`. A report file that can't be created fails the call before anything is started.
+
+With `live: true` the reply ends with the link to hand to the person (the agent shouldn't open it):
+
+```text
+Started command 'htop' in PTY session 'htop' (pid: 12345, rows: 43, cols: 155), watch live at http://127.0.0.1:52817/s/htop?t=3f9c…
 ```
 
 ### `tui_input`
@@ -158,6 +171,31 @@ Renders the current screen from the same emulator state `tui_read` uses, so text
 - PNGs use an embedded JetBrains Mono, so they look the same on every machine; box-drawing characters are drawn so borders join between cells. SVG output is deterministic, so it can be used for golden-file tests.
 - Handles 16/256/truecolor, colors the app redefines (OSC 4/10/11), bold, dim, italic, inverse, hidden, strikethrough, underline styles, wide and combining characters, and the cursor shape.
 
+### `tui_signal`
+
+Sends a signal to the running app without ending the session, e.g. to check that it shuts down cleanly on `TERM`, reloads on `HUP`, or keeps its screen intact across `STOP` / `CONT`.
+
+| Parameter | Type | Default | |
+| :--- | :--- | :--- | :--- |
+| `signal` | string | required | `INT`, `TERM`, `HUP`, `QUIT`, `KILL`, `TSTP`, `STOP`, `CONT`, `USR1`, `USR2`, `WINCH`, `ALRM`, `PIPE`, `TTIN`, `TTOU`, and the crash signals `ABRT`, `SEGV`, `BUS`, `FPE`, `TRAP`; case-insensitive, `SIG` prefix optional |
+| `target` | string | `"foreground"` | `"foreground"`: the terminal's foreground process group, as Ctrl+C does (in a shell, the running job; otherwise the app and its children). `"process"`: only the process `tui_start` launched, e.g. the shell itself |
+| `session_id` | string | `"default"` | |
+
+```json
+{ "signal": "TERM" }
+```
+
+```text
+Sent SIGTERM to the foreground process group (48213) in session 'default'
+```
+
+- The call returns right away; check the effect with `tui_expect` or `tui_wait_exit` (which then reports e.g. `killed by signal 15 (SIGTERM)`).
+- `<CTRL+C>` and `<CTRL+Z>` in `tui_input` go through the terminal, which turns them into signals only while the app leaves keyboard signals on. Full-screen apps in raw mode read them as keys instead; `tui_signal` always delivers.
+- A process that isn't running under a job-control shell ignores `TSTP` unless it handles it (the kernel discards it for a session's own process group); send `STOP` to pause it regardless.
+- The crash signals simulate a crash (by default the process dies, possibly with a core dump), e.g. to test a crash handler or that a supervisor restarts the app. `TRAP` is the breakpoint signal: to break into a program running under `gdb` or `lldb` in the session, send `INT` instead, as Ctrl+C would.
+- Fails if the process has already exited. Signal numbers follow the platform (e.g. `USR1` is 10 on Linux, 30 on macOS).
+- Recordings get a marker event (`m`) named after the signal.
+
 ### `tui_resize`
 
 Resizes the PTY and the screen (`rows`, `cols`), to test how an app re-lays out. Text is re-wrapped like a real terminal.
@@ -175,7 +213,11 @@ Resizes the PTY and the screen (`rows`, `cols`), to test how an app re-lays out.
 
 ### `tui_end`
 
-Stops a session: kills its whole process group (so background children don't leak), reaps the process and closes its recording.
+Stops a session: kills its whole process group (so background children don't leak), reaps the process and closes its recording and report. If the session writes a [report](#session-report), its `exit` and `summary` lines are written before the call returns, and the reply adds the totals:
+
+```text
+Terminated session 'default' for command 'sh' (pid: 4242). Report '/tmp/app.jsonl': 5 checks, 4 passed, 1 failed
+```
 
 ---
 
@@ -224,13 +266,14 @@ Default foreground and background carry no tag.
 
 ## Recording
 
-Pass `record_path` to `tui_start` and the session is written as [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/): output (`o`), input (`i`), resizes (`r`) and exit (`x`, the real exit code, or `128 + signal` for a killed process, e.g. `137` after `tui_end`), with timestamps taken when the output was produced. The reader runs continuously, so recordings keep real timing even while the agent is idle.
+Pass `record_path` to `tui_start` and the session is written as [asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/): output (`o`), input (`i`), resizes (`r`), markers (`m`, the name of each signal sent with `tui_signal`) and exit (`x`, the real exit code, or `128 + signal` for a killed process, e.g. `137` after `tui_end`), with timestamps taken when the output was produced. The reader runs continuously, so recordings keep real timing even while the agent is idle.
 
 ```json
 {"version": 3, "term": {"cols": 155, "rows": 43, "type": "xterm-256color"}, "timestamp": 1726960000, "command": "htop"}
 [0.152, "o", "\u001b[?2004h$ "]
 [1.204, "i", "fastfetch\r"]
 [0.342, "r", "120x40"]
+[2.117, "m", "SIGINT"]
 [0.850, "x", "0"]
 ```
 
@@ -245,6 +288,97 @@ agg session.cast session.gif         # GIF via agg
 [`examples/neofetch/`](../examples/neofetch/) contains a full recorded session (`fastfetch` in `nix-shell`) with the MCP calls that produced it:
 
 [![Recorded session: fastfetch in nix-shell](../assets/demo.gif)](https://asciinema.org/a/h4tKuB4nJSyDvGUo)
+
+---
+
+## Session report
+
+A recording shows what happened on screen; the report shows what was **checked**. Pass `report_path` to `tui_start` and the session writes [JSON Lines](https://jsonlines.org) to that file: one JSON object per line, for inputs, every expectation and wait with its result and timing, screenshots, the exit status and a final summary. Attach it to a CI run or a bug report next to the recording.
+
+```json
+{"at_ms":0,"type":"start","session_id":"default","command":"sh","args":["-c","./app"],"rows":43,"cols":155,"pid":4242,"record_path":"/tmp/app.cast","timestamp":1790000000,"version":1}
+{"at_ms":350,"type":"expect","target":"screen","syntax":"literal","patterns":["Ready"],"timeout_ms":10000,"passed":true,"elapsed_ms":310,"pattern_index":0,"matched":"Ready","row":2,"error":null}
+{"at_ms":352,"type":"input","keys":"q","bytes":1}
+{"at_ms":5360,"type":"expect","target":"stream","syntax":"literal","patterns":["Quit? (y/n)"],"timeout_ms":5000,"passed":false,"elapsed_ms":5004,"pattern_index":null,"matched":null,"row":null,"error":"'Quit? (y/n)' not found in output: timed out after 5s. Unread output (last 500 chars):\n…"}
+{"at_ms":5400,"type":"screenshot","format":"png","path":"/tmp/app.png","bytes":48213}
+{"at_ms":5530,"type":"exit","exit_status":{"signal":9}}
+{"at_ms":5531,"type":"summary","checks":2,"passed":1,"failed":1,"exit_status":{"signal":9},"duration_ms":5531}
+```
+
+Every line has `type` and `at_ms`: milliseconds since the session started, when the line was written. A check's line is written when it finishes, so it started at `at_ms - elapsed_ms`. Fields that don't apply are `null`. Durations are in milliseconds.
+
+| `type` | Written when | Fields |
+| :--- | :--- | :--- |
+| `start` | The session starts (always the first line) | `session_id`, `command`, `args`, `rows`, `cols`, `pid`, `record_path` (`null` without a recording), `timestamp` (Unix seconds), `version` (`1`) |
+| `input` | `tui_input` | `keys` as given (e.g. `"ls<ENTER>"`), `bytes` sent |
+| `paste` | `tui_paste` | `text`, `bytes` |
+| `resize` | `tui_resize` | `rows`, `cols` |
+| `signal` | `tui_signal` succeeds | `signal` (e.g. `"SIGINT"`), `target` (`"foreground"` / `"process"`), `id` (the process group or process it was sent to) |
+| `expect` | `tui_expect` ends | `target` (`"stream"` / `"screen"`), `syntax` (`"literal"` / `"regex"` / `"glob"`), `patterns` (as written), `timeout_ms`, `passed`, `elapsed_ms`; on success `pattern_index` (from 0) and `matched`, plus `row` (from 1, screen mode, as in the reply); on failure `error` |
+| `wait_gone` | `tui_wait_gone` ends | `syntax`, `patterns`, `timeout_ms`, `passed`, `elapsed_ms`, `error` |
+| `wait_stable` | `tui_wait_stable` ends | `quiet_period_ms`, `timeout_ms`, `passed`, `elapsed_ms`, `error` |
+| `wait_exit` | `tui_wait_exit` ends | `timeout_ms`, `passed`, `elapsed_ms`, `exit_status`, `error` |
+| `run_script` | `tui_run_script` ends | `commands`, `prompt`, `syntax`, `timeout_ms` (per command), `passed`, `elapsed_ms`, `completed` (commands that finished), `error` |
+| `screenshot` | `tui_take_screenshot` succeeds | `format` (`"png"` / `"svg"`), `path` (`null` when returned inline), `bytes` |
+| `exit` | The process exits, after its last output | `exit_status`: `{"exit_code": N}`, `{"signal": N}` or `"unknown"`, as in `tui_list_sessions` |
+| `summary` | The session ends (always the last line) | `checks`, `passed`, `failed`, `exit_status` (`null` if it was never reported), `duration_ms` |
+
+- **Checks** are the lines with a boolean `passed`: `expect`, `wait_gone`, `wait_stable`, `wait_exit` and `run_script`. `error` is the same message the tool reply gives. `wait_exit` passes when the process exits, whatever its exit code (the code is in `exit` and `summary`); `run_script` fails if any command's prompt didn't appear. Calls rejected before they start waiting (e.g. an invalid regex) aren't logged.
+- **`exit`** is written once, as soon as the process is gone, so it can come before later checks such as `tui_wait_exit`.
+- **`summary`** is written once, when the session ends: `tui_end`, a `tui_start` that replaces the same `session_id`, or the server shutting down cleanly with the session still open. It isn't written when the process exits, since the agent can still check things afterwards. If the session is ended while its process runs, the `exit` line records the kill (`{"signal": 9}`) just before the summary.
+- **Crash-safe:** each line is flushed as soon as it's written, so if the server dies the file still holds every line so far, each valid on its own; only the `summary` is missing.
+- **Watch it live** while the agent works:
+
+```bash
+tail -f /tmp/app.jsonl
+tail -f /tmp/app.jsonl | jq -c 'select(.passed == false)'   # failed checks only
+```
+
+The same events are available in process to anything embedding ShadowPTY, with or without a report file: `PtyManager::subscribe_report_session` returns a `ReportSubscription` with the events so far (`history`: the `start` entry plus the latest 1000; `dropped` counts older ones left out, and `totals` counts every check) and a `tokio::sync::broadcast` receiver (`live`) for the rest, with nothing missed or repeated in between. A subscriber that falls more than 256 events behind skips the oldest.
+
+---
+
+## Live viewer
+
+`tui_start` with `live: true` lets a person watch a session in a browser while the agent drives it: the screen as it changes, a timeline of inputs and checks with pass/fail, and running counts. The page is view-only.
+
+| URL | |
+| :--- | :--- |
+| `http://127.0.0.1:PORT/s/<session_id>?t=TOKEN` | The session's page (the link `tui_start` returns) |
+| `http://127.0.0.1:PORT/?t=TOKEN` | List of live sessions, refreshed every 5 s |
+| `http://127.0.0.1:PORT/s/<session_id>/events?t=TOKEN` | The page's event stream |
+
+The server starts on the first `live: true` and is shared by every session of that MCP server; it stops with the MCP server. `PORT` is picked by the OS and `TOKEN` is new each time. When a session ends (its process exits, or `tui_end`), its page keeps the final screen and timeline until the id is reused or the server stops. Starting the id again with `live: true` switches the open page to the new session; starting it without `live` takes it off the viewer.
+
+**Page.** One self-contained HTML file (no external scripts, styles or fonts), light and dark, one column on narrow screens. The terminal takes most of the page, in a window with a `LIVE` / `ENDED` / `OFFLINE` badge; an ended session's final screen is dimmed and labelled with how it ended. Under it, **Latest** shows the agent's last action. The side panel has the verdict (passed, failed, checks, a pass/fail bar, elapsed time, frames per second), the summary once it arrives, and the timeline with filters (All, Checks, Failures, Inputs). The header shows the session id, command line and status (`running`, `exited with code N`, `killed by signal N`, `ended · …`). It reconnects by itself (`EventSource`) and replays the timeline on reconnect.
+
+**Events.** Server-sent events (`text/event-stream`), each with one line of JSON data:
+
+| Event | Data | When |
+| :--- | :--- | :--- |
+| `status` | `{"session_id", "command", "state", "exit_status", "started_ms", "ended_ms"}` | On connect and when it changes |
+| `frame` | `{"seq", "rows", "cols", "svg"}` | On connect (latest frame) and when the screen changes |
+| `report` | One session-report event, e.g. `{"type": "expect", "at_ms": 123, "passed": true, …}` | Past ones on connect, then as they happen |
+
+- `state` is `running`, `exited` (the process ended, the session is still open) or `closed` (`tui_end`, or the id was replaced). `exit_status` is `null`, `{"exit_code": N}`, `{"signal": N}` or `"unknown"`, as in `tui_list_sessions`. Times are milliseconds since the Unix epoch.
+- `svg` is the same render as `tui_take_screenshot` with `format: "svg"`, taken from the session's one emulator, so the person sees exactly what the agent reads. `seq` increases with each frame; an unchanged screen isn't sent again.
+- `report` events use the JSON session report's format (`type`: `start`, `input`, `paste`, `resize`, `expect`, `wait_gone`, `wait_stable`, `wait_exit`, `run_script`, `screenshot`, `exit`, `summary`). A check is any event with a `passed` field; failed ones carry `error`. The page counts checks as they arrive and takes the final numbers from `summary`.
+
+**Frame rate and cost.** A per-session task watches the session's revision counter and exit status. When the screen changed, it takes a `Screen` snapshot under the terminal lock and renders the SVG outside it on a blocking thread, at most 15 frames per second (`MAX_FPS` in `src/live/frames.rs`) while someone watches, and once per second otherwise (so a late viewer still sees a recent screen right away). A burst of output becomes one frame. Frames are handed over through a `watch` channel, so a slow viewer just gets the latest frame and never holds up the reader or other viewers. On the benchmark's busy 43×155 screen a frame costs about 0.19 ms to capture and 0.5 ms to render (`cargo bench -- render`, `capture` + `screenshot_svg`, Apple M-series), about 1% of a core at 15 fps.
+
+**Security.**
+
+- Bound to 127.0.0.1 only, on an ephemeral port.
+- Every request must carry the server's token (128 random bits from `/dev/urandom`, hex) as `?t=`; otherwise `403`. The token is compared in constant time.
+- The `Host` header must be `127.0.0.1:PORT` or `localhost:PORT`; otherwise `421`. This stops DNS-rebinding pages from reading the stream.
+- Read-only: only `GET` is served (`405` otherwise), and nothing from the browser reaches the session.
+- Responses carry `Cache-Control: no-store`, `Referrer-Policy: no-referrer` (the token is in the URL), a strict `Content-Security-Policy` and `X-Frame-Options: DENY`. The screen is shown as an image, so SVG content can't run script.
+- At most 64 connections at once; a client that doesn't send its request within 5 s, or doesn't read for 10 s, is dropped.
+- Anyone on the same machine who gets the link can watch; treat it like the session's output.
+
+The `report` events are the [session report](#session-report)'s lines, sent whether or not the session writes a report file; a viewer that connects mid-session first gets the ones so far.
+
+**Limitations.** Plain HTTP on loopback only, so it can't be watched from another machine without a tunnel. No scrollback, like `tui_read`.
 
 ---
 
@@ -267,6 +401,7 @@ flowchart LR
     Term --> Screen["Screen snapshot"]
     Screen --> Text["tagged / plain text<br/>tui_read, screen expect"]
     Screen --> Shot["SVG / PNG<br/>tui_take_screenshot"]
+    Screen --> Live["SVG frames over SSE<br/>live viewer"]
     Output --> Waits["tui_expect, tui_wait_stable,<br/>tui_run_script"]
 ```
 
@@ -287,7 +422,9 @@ Design notes: [`RFC-single-emulator-core.md`](proposals/RFC-single-emulator-core
 | `src/palette.rs` | Color and style resolution |
 | `src/screenshot.rs`, `src/rasterizer.rs` | SVG and PNG rendering |
 | `src/input.rs` | Key tokens → bytes |
+| `src/live/` | Live viewer: HTTP/SSE server, frames, page (`assets/live/index.html`) |
 | `src/recorder.rs` | asciicast v3 writer |
+| `src/report.rs` | Session report: events, JSON Lines writer, check totals |
 
 ---
 

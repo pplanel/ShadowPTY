@@ -33,7 +33,8 @@ pub enum WaitError {
 }
 
 /// How a pattern's text is interpreted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Syntax {
     /// Matched verbatim.
     #[default]
@@ -48,6 +49,7 @@ pub enum Syntax {
 #[derive(Debug, Clone)]
 pub struct Pattern {
     source: String,
+    syntax: Syntax,
     regex: Regex,
 }
 
@@ -56,6 +58,7 @@ impl Pattern {
     pub fn literal(text: &str) -> Result<Self, regex::Error> {
         Ok(Self {
             source: text.to_string(),
+            syntax: Syntax::Literal,
             regex: Regex::new(&regex::escape(text))?,
         })
     }
@@ -64,6 +67,7 @@ impl Pattern {
     pub fn regex(pattern: &str) -> Result<Self, regex::Error> {
         Ok(Self {
             source: pattern.to_string(),
+            syntax: Syntax::Regex,
             regex: Regex::new(pattern)?,
         })
     }
@@ -74,6 +78,7 @@ impl Pattern {
     pub fn glob(pattern: &str) -> Result<Self, regex::Error> {
         Ok(Self {
             source: pattern.to_string(),
+            syntax: Syntax::Glob,
             regex: Regex::new(&glob_to_regex(pattern))?,
         })
     }
@@ -103,6 +108,12 @@ impl Pattern {
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// How the source is interpreted.
+    #[must_use]
+    pub const fn syntax(&self) -> Syntax {
+        self.syntax
     }
 
     /// Returns the first match in `text`, if any.
@@ -278,6 +289,14 @@ impl SessionOutput {
     /// update is flushed on timeout.
     pub fn notify_screen_changed(&self) {
         self.bump();
+    }
+
+    /// Subscribes to the revision counter, which changes on every chunk and every screen change
+    /// without output. The receiver doesn't keep the output alive: it closes when the session is
+    /// gone.
+    #[must_use]
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.revision.subscribe()
     }
 
     /// Marks the stream as ended (the process closed the PTY) and wakes waiters.

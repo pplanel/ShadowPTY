@@ -10,6 +10,7 @@
 //!   - `"o"`: terminal output
 //!   - `"i"`: terminal input
 //!   - `"r"`: terminal resize (`"{cols}x{rows}"`)
+//!   - `"m"`: marker (a label, e.g. `"SIGINT"` when a signal is sent)
 //!   - `"x"`: exit status (`"{code}"`)
 
 use std::fs::File;
@@ -127,6 +128,11 @@ impl AsciicastRecorder {
     pub fn record_resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         let data = format!("{cols}x{rows}");
         self.record_event("r", &data)
+    }
+
+    /// Records a marker (`"m"` event with a label), e.g. a signal sent to the process.
+    pub fn record_marker(&mut self, label: &str) -> Result<()> {
+        self.record_event("m", label)
     }
 
     /// Records session exit (`"x"` event with exit status string). Only the first call writes
