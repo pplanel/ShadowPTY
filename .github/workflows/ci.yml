@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,22 +24,32 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
-          toolchain: stable
-          components: rustfmt, clippy
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            accept-flake-config = true
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Nix Store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      - name: Check Flake
+        run: nix flake check
 
       - name: Check Formatting
-        run: cargo fmt --check
+        run: nix develop --command cargo fmt --check
 
       - name: Clippy Lints
-        run: cargo clippy --all-targets -- -D warnings
+        run: nix develop --command cargo clippy --all-targets -- -D warnings
 
       - name: Run Tests
-        run: cargo test --all-targets
+        run: nix develop --command cargo test --all-targets
+
+      - name: Build Package
+        run: nix build
