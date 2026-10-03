@@ -6,3 +6,4 @@ skills-lock.json
 *.orig
 result
 .worktrees/
+.direnv/
