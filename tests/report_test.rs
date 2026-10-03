@@ -386,7 +386,7 @@ async fn test_report_tools_reply_and_screenshots() {
     let server = ShadowPtyServer::new(manager.clone());
 
     let started = server
-        .tui_start(Parameters(TuiStartParams {
+        .start(TuiStartParams {
             command: "sh".to_string(),
             args: vec![
                 "-c".to_string(),
@@ -394,13 +394,11 @@ async fn test_report_tools_reply_and_screenshots() {
             ],
             rows: Some(ROWS),
             cols: Some(COLS),
-            record_path: None,
             report_path: Some(path_str.clone()),
             session_id: Some("reported".to_string()),
-            live: None,
-        }))
-        .await
-        .expect("tool call ok");
+            ..TuiStartParams::default()
+        })
+        .await;
     let text = serde_json::to_string(&started.content).unwrap();
     assert!(
         text.contains(&format!("reporting to '{path_str}'")),
@@ -471,7 +469,7 @@ async fn test_tool_replies_without_a_report() {
     let manager = PtyManager::new();
     let server = ShadowPtyServer::new(manager.clone());
     let started = server
-        .tui_start(Parameters(TuiStartParams {
+        .start(TuiStartParams {
             command: "cat".to_string(),
             args: Vec::new(),
             rows: Some(ROWS),
@@ -480,9 +478,8 @@ async fn test_tool_replies_without_a_report() {
             report_path: None,
             session_id: None,
             live: None,
-        }))
-        .await
-        .expect("tool call ok");
+        })
+        .await;
     let text = serde_json::to_string(&started.content).unwrap();
     assert!(!text.contains("reporting"), "{text}");
 

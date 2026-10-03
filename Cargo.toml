@@ -42,7 +42,7 @@ base64 = "0.22.1"
 fontdue = "0.9.3"
 png = "0.17.16"
 regex = "1.13.1"
-rmcp = { version = "3.4.0", features = ["transport-io"] }
+rmcp = { version = "3.4.0", features = ["elicitation", "transport-io"] }
 rustix = { version = "1.1.5", features = ["event", "fs", "process", "termios"] }
 rustix-openpty = "0.2.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -54,6 +54,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["async_tokio"] }
+rmcp = { version = "3.4.0", features = ["client", "elicitation", "transport-io"] }
 
 [[bench]]
 name = "shadowpty"

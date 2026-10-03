@@ -20,7 +20,7 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 
 ## Architecture
 
-- `src/server.rs`: rmcp tool definitions (14 tools); thin wrappers over `PtyManager`.
+- `src/server.rs`: rmcp tool definitions (14 tools); thin wrappers over `PtyManager`. `tui_start` takes the `RequestContext` and `InputResponses` for elicitation; tests call `ShadowPtyServer::start(params)`, which never asks.
 - `src/pty_manager.rs`: `PtyManager`, the map of sessions keyed by `session_id` (default `"default"`).
 - `src/session.rs`: `TuiSession` owns the `alacritty_terminal::tty::Pty`, one alacritty `Term`, a `SessionOutput`, an optional recorder, **one reader thread** (`run_pty_reader`) and a child-exit watcher (`watch_child_exit`, which also publishes the `ExitStatus`). Input, paste, signals, expect, wait-gone, wait-exit, wait-stable, run-script, resize, snapshot and `terminate` live here.
 - `src/output.rs`: raw output buffer (bounded, 1 MiB) with a read position and a `watch` revision counter; `Pattern`, stream expect, wait-stable.
@@ -30,6 +30,7 @@ Benchmarks (criterion): `cargo bench`, or one group with `cargo bench -- <emulat
 - `src/signals.rs`: signal names ↔ platform numbers for `tui_signal` and exit messages.
 - `src/input.rs`: `<ENTER>`, `<UP>`, `<CTRL+C>`, … key tokens to bytes. `src/recorder.rs`: asciicast v3.
 - `src/report.rs`: session report. Every session broadcasts `ReportEvent`s (inputs, checks, screenshots, exit, summary); `report_path` also writes them as JSON Lines. The reader writes the `exit` entry once, after the last output; the `summary` is written once when the session ends (`finish`), never at process exit.
+- `src/capture.rs`: the first `tui_start` that sets none of `record_path`/`report_path`/`live` asks the person once (MCP elicitation form) how sessions are captured; the answer fills unset fields for later sessions. `Capture` state lives on the server behind an async mutex held while the person answers. No form support or dismissed: a one-time hint in the reply.
 - `src/live/`: live viewer (`tui_start` with `live: true`). A hand-written HTTP/SSE server on 127.0.0.1 (random token, `Host` check, view-only) that streams SVG frames (one producer per session, at most `MAX_FPS`, snapshot under the lock and render outside it), status, and the session's report events. Holds only weak handles on sessions.
 
 ## Invariants

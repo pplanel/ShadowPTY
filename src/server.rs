@@ -5,13 +5,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::CallToolResult,
+    handler::server::{tool::InputResponses, wrapper::Parameters},
+    model::{CallToolResponse, CallToolResult, InputRequiredResult, ProtocolVersion},
     schemars::{self, JsonSchema},
-    tool, tool_router,
+    service::RequestContext,
+    tool, tool_router, {Peer, RoleServer},
 };
 use serde::{Deserialize, Serialize};
 
+use crate::capture::{self, Capture, Requested};
 use crate::live::LiveServer;
 use crate::output::{Pattern, Syntax};
 use crate::pty_manager::{
@@ -350,6 +352,9 @@ pub struct ShadowPtyServer {
     manager: PtyManager,
     /// The live viewer's HTTP server, started on the first `tui_start` with `live: true`.
     live: Arc<tokio::sync::OnceCell<LiveServer>>,
+    /// How the person wants sessions captured. Held while the person answers the form, so
+    /// concurrent starts wait for the one answer instead of asking twice.
+    capture: Arc<tokio::sync::Mutex<Capture>>,
 }
 
 impl ShadowPtyServer {
@@ -358,6 +363,7 @@ impl ShadowPtyServer {
         Self {
             manager,
             live: Arc::new(tokio::sync::OnceCell::new()),
+            capture: Arc::new(tokio::sync::Mutex::new(Capture::default())),
         }
     }
 
@@ -385,6 +391,137 @@ impl ShadowPtyServer {
     }
 }
 
+impl ShadowPtyServer {
+    /// `tui_start` without a client to ask: when the person hasn't been asked, the agent is told
+    /// once about the capture options instead.
+    pub async fn start(&self, params: TuiStartParams) -> CallToolResult {
+        // Without a client to ask there's never a form to return
+        let plan = self
+            .plan_capture(&params, Asking::No)
+            .await
+            .unwrap_or_default();
+        self.launch(params, plan).await
+    }
+
+    /// How the session is captured: what the agent passed, then the person's answer (asking
+    /// them first if they haven't been, see [`capture`]). `Err` is the form to return to the
+    /// client, which calls `tui_start` again with the answer.
+    async fn plan_capture(
+        &self,
+        params: &TuiStartParams,
+        asking: Asking<'_>,
+    ) -> Result<capture::Plan, InputRequiredResult> {
+        let requested = Requested {
+            record_path: params.record_path.as_deref(),
+            report_path: params.report_path.as_deref(),
+            live: params.live,
+        };
+        let mut capture = self.capture.lock().await;
+        if capture.should_ask(&requested) {
+            let answer = match asking {
+                Asking::No => capture::Answer::Unsupported,
+                Asking::During(peer) => capture::ask(peer, &params.command).await,
+                Asking::Retry(responses) => {
+                    match responses.and_then(|r| r.get(capture::INPUT_KEY)) {
+                        Some(response) => capture::read_response(response, &params.command),
+                        None => match capture::input_request(&params.command) {
+                            Ok(form) => {
+                                drop(capture);
+                                return Err(form);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Can't build the capture form: {e}");
+                                capture::Answer::Unsupported
+                            }
+                        },
+                    }
+                }
+            };
+            capture.answer(answer);
+        }
+        let plan = capture.plan(&requested);
+        drop(capture);
+        Ok(plan)
+    }
+
+    /// Starts the session, captured as `plan` says.
+    async fn launch(&self, params: TuiStartParams, plan: capture::Plan) -> CallToolResult {
+        let rows = params.rows.unwrap_or(24);
+        let cols = params.cols.unwrap_or(80);
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let config = crate::pty_manager::PtyConfig::new(&params.command, &params.args, rows, cols)
+            .with_record_path(plan.record_path.as_deref())
+            .with_report_path(plan.report_path.as_deref());
+
+        let info = match self.manager.start_session(session_id, &config).await {
+            Ok(info) => info,
+            Err(e) => {
+                return CallToolResult::error(vec![rmcp::model::ContentBlock::text(format!(
+                    "Failed to start process: {e:#}"
+                ))]);
+            }
+        };
+        let pid_str = info
+            .pid
+            .map_or_else(|| "unknown".to_string(), |p| p.to_string());
+        let cmd = &info.command;
+        let rows = info.rows;
+        let cols = info.cols;
+        let recording_str = plan
+            .record_path
+            .as_ref()
+            .map_or_else(String::new, |path| format!(", recording to '{path}'"));
+        let reporting_str = plan
+            .report_path
+            .as_ref()
+            .map_or_else(String::new, |path| format!(", reporting to '{path}'"));
+        let mut msg = format!(
+            "Started command '{cmd}' in PTY session '{session_id}' (pid: {pid_str}, rows: {rows}, cols: {cols}{recording_str}{reporting_str})"
+        );
+        if plan.live {
+            let command = command_line(&params.command, &params.args);
+            match self.watch_live(session_id, &command).await {
+                Ok(url) => {
+                    let _ = write!(msg, ", watch live at {url}");
+                    if plan.open_browser && self.capture.lock().await.first_open(session_id) {
+                        match capture::open_in_browser(&url) {
+                            Ok(()) => msg.push_str(" (opened in the person's browser)"),
+                            Err(e) => {
+                                let _ = write!(
+                                    msg,
+                                    " (couldn't open the browser: {e}; give the person the link)"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = write!(msg, ", but the live viewer is unavailable: {e:#}");
+                }
+            }
+        } else {
+            self.forget_live(session_id);
+        }
+        if plan.hint {
+            msg.push_str(
+                "\nShadowPTY can also record sessions (record_path), write a report of every check (report_path) or show the session to the person in their browser as it runs (live: true). Ask the person whether they want any of these.",
+            );
+        }
+        text_result(msg)
+    }
+}
+
+/// How `tui_start` can reach the person to ask how sessions are captured.
+enum Asking<'a> {
+    /// It can't: no client, or one that can't show forms.
+    No,
+    /// Send the form to the client during the call (protocols before 2026-07-28).
+    During(&'a Peer<RoleServer>),
+    /// Return the form as an input request; the client calls again with the answer, if any
+    /// (2026-07-28 and later, where a server can't send requests to the client).
+    Retry(Option<&'a rmcp::model::InputResponses>),
+}
+
 /// The command line as shown to the person watching.
 fn command_line(command: &str, args: &[String]) -> String {
     std::iter::once(command)
@@ -398,59 +535,28 @@ impl ShadowPtyServer {
     /// Spawns a new process in a native pseudo-terminal (PTY) and initializes the screen buffer.
     #[tool(
         name = "tui_start",
-        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once. With live: true, the reply includes a local link where a person can watch the session live in a browser (view-only); give them the link, don't open it."
+        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once. With live: true, the reply includes a local link where a person can watch the session live in a browser (view-only); give them the link, don't open it. When record_path, report_path and live are all left unset, ShadowPTY asks the person once (through the client) how they want sessions captured and applies their answer to later sessions too."
     )]
     pub async fn tui_start(
         &self,
         Parameters(params): Parameters<TuiStartParams>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let rows = params.rows.unwrap_or(24);
-        let cols = params.cols.unwrap_or(80);
-        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
-        let config = crate::pty_manager::PtyConfig::new(&params.command, &params.args, rows, cols)
-            .with_record_path(params.record_path.as_deref())
-            .with_report_path(params.report_path.as_deref());
-
-        match self.manager.start_session(session_id, &config).await {
-            Ok(info) => {
-                let pid_str = info
-                    .pid
-                    .map_or_else(|| "unknown".to_string(), |p| p.to_string());
-                let cmd = &info.command;
-                let rows = info.rows;
-                let cols = info.cols;
-                let recording_str = params
-                    .record_path
-                    .as_ref()
-                    .map_or_else(String::new, |path| format!(", recording to '{path}'"));
-                let reporting_str = params
-                    .report_path
-                    .as_ref()
-                    .map_or_else(String::new, |path| format!(", reporting to '{path}'"));
-                let mut msg = format!(
-                    "Started command '{cmd}' in PTY session '{session_id}' (pid: {pid_str}, rows: {rows}, cols: {cols}{recording_str}{reporting_str})"
-                );
-                if params.live.unwrap_or(false) {
-                    let command = command_line(&params.command, &params.args);
-                    match self.watch_live(session_id, &command).await {
-                        Ok(url) => {
-                            let _ = write!(msg, ", watch live at {url}");
-                        }
-                        Err(e) => {
-                            let _ = write!(msg, ", but the live viewer is unavailable: {e:#}");
-                        }
-                    }
-                } else {
-                    self.forget_live(session_id);
-                }
-                Ok(CallToolResult::success(vec![
-                    rmcp::model::ContentBlock::text(msg),
-                ]))
-            }
-            Err(e) => Ok(CallToolResult::error(vec![
-                rmcp::model::ContentBlock::text(format!("Failed to start process: {e:#}")),
-            ])),
-        }
+        context: RequestContext<RoleServer>,
+        InputResponses(responses): InputResponses,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        let asking = if !capture::supports_forms(context.client_capabilities().as_ref()) {
+            Asking::No
+        } else if context
+            .protocol_version()
+            .is_some_and(|v| v.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+        {
+            Asking::Retry(responses.as_ref())
+        } else {
+            Asking::During(&context.peer)
+        };
+        Ok(match self.plan_capture(&params, asking).await {
+            Ok(plan) => self.launch(params, plan).await.into(),
+            Err(form) => form.into(),
+        })
     }
 
     /// Sends raw keystrokes or symbolic tokens (<ENTER>, <UP>, <CTRL+C>, etc.) to the PTY.

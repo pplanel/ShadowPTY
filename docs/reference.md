@@ -63,6 +63,26 @@ With `live: true` the reply ends with the link to hand to the person (the agent 
 Started command 'htop' in PTY session 'htop' (pid: 12345, rows: 43, cols: 155), watch live at http://127.0.0.1:52817/s/htop?t=3f9c…
 ```
 
+#### Asking the person
+
+When `record_path`, `report_path` and `live` are all left unset, the first `tui_start` asks the person how they want sessions captured, through an MCP [elicitation](https://modelcontextprotocol.io/specification/draft/client/elicitation) form the client shows them. The session starts once they answer. On protocol 2026-07-28 and later, `tui_start` returns the form as an input request and the client calls it again with the answer; on older protocols the server sends the form during the call.
+
+| Field | Default | |
+| :--- | :--- | :--- |
+| `record`, `record_path` | off, `<cwd>/<command>.cast` | Record the session |
+| `report`, `report_path` | off, `<cwd>/<command>.report.jsonl` | Write a session report |
+| `live` | off | Serve the live viewer |
+| `open_browser` | on | With `live`, the server opens the page in the person's default browser (`open` on macOS, `xdg-open` elsewhere) instead of only returning the link |
+
+The default paths are in the server's working directory and never name an existing file (`htop-2.cast`, …). An empty path takes the default, and `~/` is expanded.
+
+- The person is asked **once per server**. Their answer applies to every later session: the first session records to the chosen file, later ones to the next free name beside it (`app.cast`, `app-2.cast`, …). The live page of a session id is opened once; restarting the id switches the open page to the new session.
+- What the agent passes always wins, field by field. A call that sets any of the three fields doesn't trigger the form.
+- Declining the form means capture nothing.
+- If the client can't show forms, or the person closes the form (or doesn't answer within 10 minutes), the session starts without capture and the first reply ends with a hint for the agent to offer these options. It shows up once.
+
+The reply says what happened, e.g. `…, watch live at http://127.0.0.1:52817/s/htop?t=3f9c… (opened in the person's browser)`.
+
 ### `tui_input`
 
 Sends text and key tokens.
@@ -421,6 +441,7 @@ Design notes: [`RFC-single-emulator-core.md`](proposals/RFC-single-emulator-core
 | `src/screen.rs` | Screen snapshot, tagged and plain text |
 | `src/palette.rs` | Color and style resolution |
 | `src/screenshot.rs`, `src/rasterizer.rs` | SVG and PNG rendering |
+| `src/capture.rs` | Asking the person how sessions are captured (elicitation) |
 | `src/input.rs` | Key tokens → bytes |
 | `src/live/` | Live viewer: HTTP/SSE server, frames, page (`assets/live/index.html`) |
 | `src/recorder.rs` | asciicast v3 writer |
