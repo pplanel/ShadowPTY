@@ -91,6 +91,7 @@ What the assistant "reads" is the screen as text, with colors kept:
 | ✅ **Test reports** | A JSON Lines log of every check (passed or failed, and how long it took) and a summary, e.g. `5 checks, 4 passed, 1 failed` |
 | 🚦 **Send signals** | Interrupt, terminate, pause and resume the app (`INT`, `TERM`, `STOP`, `CONT`, …) without closing it |
 | 📺 **Watch live** | A private local web page showing the screen and every input and check as the assistant works |
+| 🙋 **Asks you first** | On the first session, a form asks whether you want a recording, a report or the live page (opened in your browser for you); your answer sticks for later sessions |
 | 📐 **Resize** | Test how the app adapts to small and large windows |
 | 🧩 **Several apps at once** | Each in its own named session |
 | 🧹 **Clean shutdown** | Closing a session stops the app and anything it spawned |

@@ -363,7 +363,7 @@ async fn test_session_tools_route_by_session_id() {
     let server = ShadowPtyServer::new(manager.clone());
 
     let started = server
-        .tui_start(Parameters(TuiStartParams {
+        .start(TuiStartParams {
             command: "cat".to_string(),
             args: Vec::new(),
             rows: Some(10),
@@ -372,9 +372,8 @@ async fn test_session_tools_route_by_session_id() {
             report_path: None,
             session_id: Some("tool-sess".to_string()),
             live: None,
-        }))
-        .await
-        .expect("tool call ok");
+        })
+        .await;
     assert!(!started.is_error.unwrap_or(false));
     assert!(manager.is_session_active("tool-sess").await);
     assert!(!manager.is_active().await, "default session must not start");

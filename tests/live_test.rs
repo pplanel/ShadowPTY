@@ -54,7 +54,7 @@ impl LiveUrl {
 /// Starts `sh -c script` as a live session and returns its viewer link.
 async fn start_live(server: &ShadowPtyServer, session_id: &str, script: &str) -> LiveUrl {
     let started = server
-        .tui_start(Parameters(TuiStartParams {
+        .start(TuiStartParams {
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script.to_string()],
             rows: Some(ROWS),
@@ -62,9 +62,8 @@ async fn start_live(server: &ShadowPtyServer, session_id: &str, script: &str) ->
             session_id: Some(session_id.to_string()),
             live: Some(true),
             ..TuiStartParams::default()
-        }))
-        .await
-        .expect("tool call ok");
+        })
+        .await;
     let text = text_of(&started);
     assert!(!started.is_error.unwrap_or(false), "{text}");
     assert!(text.contains(", watch live at http://127.0.0.1:"), "{text}");
@@ -371,13 +370,12 @@ async fn test_ended_session_keeps_its_last_frame() {
 
     // Reusing the id without `live` takes the old session off the viewer
     let reused = server
-        .tui_start(Parameters(TuiStartParams {
+        .start(TuiStartParams {
             command: "cat".to_string(),
             session_id: Some("live-end".to_string()),
             ..TuiStartParams::default()
-        }))
-        .await
-        .expect("tool call ok");
+        })
+        .await;
     assert!(!text_of(&reused).contains("watch live"));
     let (code, _) = get(
         url.port,
