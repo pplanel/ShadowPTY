@@ -7,7 +7,10 @@ use std::time::Duration;
 use rmcp::{
     ServerHandler,
     handler::server::{common::FromContextPart, tool::ToolCallContext, wrapper::Parameters},
-    model::{CallToolResponse, CallToolResult, InputRequiredResult, ProtocolVersion},
+    model::{
+        CallToolResponse, CallToolResult, DiscoverResult, InitializeRequestParams,
+        InitializeResult, InputRequiredResult, ProtocolVersion,
+    },
     schemars::{self, JsonSchema},
     service::RequestContext,
     tool, tool_handler, tool_router, {Peer, RoleServer},
@@ -15,6 +18,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::capture::{self, Capture, Requested};
+use crate::client_log::{ClientLog, ClientSeen};
 use crate::live::LiveServer;
 use crate::output::{Pattern, Syntax};
 use crate::pty_manager::{
@@ -356,6 +360,8 @@ pub struct ShadowPtyServer {
     /// How the person wants sessions captured. Only held briefly, never while the person
     /// answers.
     capture: Arc<tokio::sync::Mutex<Capture>>,
+    /// Logs the connected client once, see [`crate::client_log`].
+    client_log: Arc<ClientLog>,
     /// Held by the start that asks the person, so other starts that need the answer wait for
     /// it instead of asking twice. Starts that don't need the answer never take it.
     asking: Arc<tokio::sync::Mutex<()>>,
@@ -368,6 +374,7 @@ impl ShadowPtyServer {
             manager,
             live: Arc::new(tokio::sync::OnceCell::new()),
             capture: Arc::new(tokio::sync::Mutex::new(Capture::default())),
+            client_log: Arc::new(ClientLog::default()),
             asking: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -606,6 +613,12 @@ impl ShadowPtyServer {
         context: RequestContext<RoleServer>,
         retry: Retry,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        // Clients on 2026-07-28 skip `initialize` and send who they are with each request
+        self.client_log.once(ClientSeen {
+            protocol: context.protocol_version().as_ref(),
+            client: context.client_info().as_ref(),
+            capabilities: context.client_capabilities().as_ref(),
+        });
         let asking = if !capture::supports_forms(context.client_capabilities().as_ref()) {
             Asking::No
         } else if context
@@ -1235,7 +1248,37 @@ For shell sessions, tui_run_script runs commands one at a time and returns each 
 Recordings, reports and the live viewer link are for the person: pass their paths and links on to them. \
 End every session you start with tui_end."
 )]
-impl ServerHandler for ShadowPtyServer {}
+impl ServerHandler for ShadowPtyServer {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, rmcp::ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        let result = self.negotiate_initialize(&request)?;
+        self.client_log.once(ClientSeen {
+            protocol: Some(&result.protocol_version),
+            client: Some(&request.client_info),
+            capabilities: Some(&request.capabilities),
+        });
+        Ok(result)
+    }
+
+    async fn discover(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, rmcp::ErrorData> {
+        self.client_log.once(ClientSeen {
+            protocol: context.protocol_version().as_ref(),
+            client: context.client_info().as_ref(),
+            capabilities: context.client_capabilities().as_ref(),
+        });
+        Ok(DiscoverResult::from_server_info(
+            self.supported_protocol_versions().into_owned(),
+            self.get_info(),
+        ))
+    }
+}
 
 #[cfg(test)]
 mod tests {

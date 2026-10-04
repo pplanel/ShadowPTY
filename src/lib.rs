@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod client_log;
 pub mod input;
 pub mod live;
 pub mod output;

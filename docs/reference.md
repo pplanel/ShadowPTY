@@ -442,6 +442,14 @@ flowchart LR
 - **No lock is held while waiting**, so a long `tui_expect` never blocks `tui_input` or `tui_end` on the same session.
 - **stdout is reserved for JSON-RPC**; logs go to stderr.
 
+On the first request that identifies the client (`initialize` on protocols before 2026-07-28; `server/discover` or the first `tui_start` on 2026-07-28, where the client sends this with each request), the server logs one line saying who connected and what it supports, for example:
+
+```
+Client connected: claude-code 2.1.288, protocol 2026-07-28, elicitation: form and url, tasks (io.modelcontextprotocol/tasks): no, extensions: none, experimental: none, sampling: no, roots: yes
+```
+
+`elicitation` tells whether the capture form can be shown; `tasks` whether the client declares the MCP Tasks extension.
+
 Design notes: [`RFC-single-emulator-core.md`](proposals/RFC-single-emulator-core.md), [`RFC-screenshots-on-shared-term.md`](proposals/RFC-screenshots-on-shared-term.md). Domain vocabulary: [`CONTEXT.md`](../CONTEXT.md).
 
 | Module | Role |
