@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "shadowpty",
   "display_name": "ShadowPTY",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Run and test terminal (TUI) apps headlessly: send keys, read the screen with colors, wait for output, take screenshots, record sessions.",
   "long_description": "ShadowPTY lets Claude drive terminal programs the way a person would. It starts a program in a pseudo-terminal, types keys, reads the screen with colors and styles, waits for text to appear or disappear, takes PNG/SVG screenshots and records sessions as asciicast v3. It can also write a JSON report of every check and show the session live in your browser.\n\nShadowPTY runs the commands Claude asks for with your user's permissions. Tools that start programs or send them keys are marked destructive so Claude Desktop asks before running them.",
   "author": {
