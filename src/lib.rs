@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod client_log;
 pub mod input;
 pub mod live;
 pub mod output;
@@ -7,6 +8,7 @@ pub mod pty_manager;
 pub mod rasterizer;
 pub mod recorder;
 pub mod report;
+pub mod schema;
 pub mod screen;
 pub mod screenshot;
 pub mod server;

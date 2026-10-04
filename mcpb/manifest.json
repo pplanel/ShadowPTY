@@ -1,0 +1,63 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "shadowpty",
+  "display_name": "ShadowPTY",
+  "version": "0.6.0",
+  "description": "Run and test terminal (TUI) apps headlessly: send keys, read the screen with colors, wait for output, take screenshots, record sessions.",
+  "long_description": "ShadowPTY lets Claude drive terminal programs the way a person would. It starts a program in a pseudo-terminal, types keys, reads the screen with colors and styles, waits for text to appear or disappear, takes PNG/SVG screenshots and records sessions as asciicast v3. It can also write a JSON report of every check and show the session live in your browser.\n\nShadowPTY runs the commands Claude asks for with your user's permissions. Tools that start programs or send them keys are marked destructive so Claude Desktop asks before running them.",
+  "author": {
+    "name": "Pedro Gabriel",
+    "email": "pplanel@gmail.com",
+    "url": "https://github.com/pplanel"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pplanel/ShadowPTY"
+  },
+  "homepage": "https://github.com/pplanel/ShadowPTY#readme",
+  "documentation": "https://github.com/pplanel/ShadowPTY/blob/main/docs/reference.md",
+  "support": "https://github.com/pplanel/ShadowPTY/issues",
+  "license": "MIT OR Apache-2.0",
+  "icon": "icon.png",
+  "keywords": ["tui", "terminal", "pty", "testing", "screenshot", "asciicast"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/shadowpty",
+    "mcp_config": {
+      "command": "/bin/sh",
+      "args": ["${__dirname}/server/shadowpty"],
+      "env": {
+        "SHADOWPTY_WORKDIR": "${user_config.workdir}"
+      }
+    }
+  },
+  "user_config": {
+    "workdir": {
+      "type": "directory",
+      "title": "Working directory",
+      "description": "Programs start here, and recordings and reports are offered here by default.",
+      "default": "${HOME}",
+      "required": false
+    }
+  },
+  "tools": [
+    { "name": "tui_start", "description": "Spawn a command in a new PTY session" },
+    { "name": "tui_input", "description": "Send keys and text" },
+    { "name": "tui_paste", "description": "Send text as one bracketed paste" },
+    { "name": "tui_expect", "description": "Wait for a literal or regex in new output or on screen" },
+    { "name": "tui_wait_stable", "description": "Wait until output goes quiet" },
+    { "name": "tui_wait_gone", "description": "Wait until text disappears from the screen" },
+    { "name": "tui_wait_exit", "description": "Wait for the process to exit; get its exit code or signal" },
+    { "name": "tui_run_script", "description": "Run shell commands one by one, collecting each output" },
+    { "name": "tui_read", "description": "Read the screen as tagged text" },
+    { "name": "tui_take_screenshot", "description": "Render the screen to PNG or SVG" },
+    { "name": "tui_signal", "description": "Send a signal without ending the session" },
+    { "name": "tui_resize", "description": "Resize the terminal" },
+    { "name": "tui_list_sessions", "description": "List sessions and whether their process has exited" },
+    { "name": "tui_end", "description": "Stop a session and its whole process group" }
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "linux"]
+  }
+}
