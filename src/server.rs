@@ -153,6 +153,7 @@ fn parse_patterns(
 
 /// Parameters for `tui_start` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiStartParams {
     /// The executable command to spawn (e.g. "top", "htop", "bash").
     pub command: String,
@@ -179,6 +180,7 @@ pub struct TuiStartParams {
 
 /// Parameters for `tui_input` tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiInputParams {
     /// String containing keystrokes and symbolic tokens (e.g. "<ENTER>", "<ESC>", "<UP>", "<CTRL+C>").
     pub keys: String,
@@ -207,6 +209,7 @@ impl From<SignalTargetParam> for SignalTarget {
 
 /// Parameters for `tui_signal` tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiSignalParams {
     /// Signal name, with or without "SIG": INT, TERM, HUP, QUIT, KILL, TSTP, STOP, CONT, USR1,
     /// USR2, WINCH, ALRM, PIPE, TTIN, TTOU, and the crash signals ABRT, SEGV, BUS, FPE, TRAP.
@@ -220,6 +223,7 @@ pub struct TuiSignalParams {
 
 /// Parameters for `tui_resize` tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiResizeParams {
     /// New number of terminal rows.
     pub rows: u16,
@@ -231,6 +235,7 @@ pub struct TuiResizeParams {
 
 /// Parameters for `tui_paste` tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiPasteParams {
     /// Text to send as a single bracketed paste (DECSET 2004).
     pub text: String,
@@ -240,6 +245,7 @@ pub struct TuiPasteParams {
 
 /// Parameters for `tui_expect` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiExpectParams {
     /// Substring or regex pattern to wait for. Give either `pattern` or `patterns`.
     pub pattern: Option<String>,
@@ -264,6 +270,7 @@ pub struct TuiExpectParams {
 
 /// Parameters for `tui_wait_stable` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiWaitStableParams {
     /// How long output must stay quiet, in milliseconds (default 100).
     pub quiet_period_ms: Option<u64>,
@@ -275,6 +282,7 @@ pub struct TuiWaitStableParams {
 
 /// Parameters for `tui_run_script` tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiRunScriptParams {
     /// Shell commands to run in order.
     pub commands: Vec<String>,
@@ -292,6 +300,7 @@ pub struct TuiRunScriptParams {
 
 /// Parameters for `tui_read` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiReadParams {
     /// Target session identifier (defaults to "default").
     pub session_id: Option<String>,
@@ -299,6 +308,7 @@ pub struct TuiReadParams {
 
 /// Parameters for `tui_end` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiEndParams {
     /// Target session identifier (defaults to "default").
     pub session_id: Option<String>,
@@ -306,6 +316,7 @@ pub struct TuiEndParams {
 
 /// Parameters for `tui_wait_gone` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiWaitGoneParams {
     /// Text or regex that should disappear from the screen (e.g. "Loading"). Give either
     /// `pattern` or `patterns`.
@@ -325,6 +336,7 @@ pub struct TuiWaitGoneParams {
 
 /// Parameters for `tui_wait_exit` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiWaitExitParams {
     /// Maximum time to wait in milliseconds (default 10000, at most 120000).
     pub timeout_ms: Option<u64>,
@@ -334,10 +346,12 @@ pub struct TuiWaitExitParams {
 
 /// Parameters for `tui_list_sessions` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiListSessionsParams {}
 
 /// Parameters for `tui_take_screenshot` tool.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[schemars(transform = crate::schema::without_null)]
 pub struct TuiScreenshotParams {
     /// Target session identifier (defaults to "default").
     pub session_id: Option<String>,
@@ -1323,6 +1337,44 @@ mod tests {
         listed.sort_unstable();
         served.sort_unstable();
         assert_eq!(listed, served);
+    }
+
+    /// Every `type` array and `anyOf` in `schema`, with where they are.
+    fn nullables(schema: &serde_json::Value, at: &str, found: &mut Vec<String>) {
+        match schema {
+            serde_json::Value::Object(map) => {
+                let null_type = map
+                    .get("type")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|types| types.iter().any(|t| t == "null"));
+                let null_branch = map
+                    .get("anyOf")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|branches| branches.iter().any(|b| b["type"] == "null"));
+                if null_type || null_branch {
+                    found.push(at.to_string());
+                }
+                for (key, value) in map {
+                    nullables(value, &format!("{at}.{key}"), found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    nullables(item, at, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn input_schemas_have_no_null_types() {
+        let mut found = Vec::new();
+        for tool in ShadowPtyServer::tool_router().list_all() {
+            let schema = serde_json::Value::Object((*tool.input_schema).clone());
+            nullables(&schema, &tool.name, &mut found);
+        }
+        assert!(found.is_empty(), "nullable parameters: {found:?}");
     }
 
     #[test]
