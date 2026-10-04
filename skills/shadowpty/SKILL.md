@@ -45,7 +45,7 @@ ShadowPTY runs a program in a real pseudo-terminal and lets you type into it and
 
 - `record_path` writes an asciicast v3 recording (`asciinema play file.cast`), `report_path` writes a JSON Lines report of every input and check, and `live: true` returns a local link where the person can watch.
 - Pass these paths and links on to the person; don't open the live link yourself.
-- If you pass none of the three, ShadowPTY may ask the person once how they want sessions captured, and applies the answer to later sessions.
+- If you pass none of the three, the session is recorded with a report to default files, and the person decides (in the background, or when you call `tui_end`) whether to keep them and where; `tui_start` never waits. Relay where `tui_end` says the files went. If the `tui_start` reply suggests offering the live view, ask the person.
 
 ## Pitfalls
 

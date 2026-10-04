@@ -434,11 +434,10 @@ async fn test_report_tools_reply_and_screenshots() {
     }
 
     let ended = server
-        .tui_end(Parameters(TuiEndParams {
+        .end(TuiEndParams {
             session_id: Some("reported".to_string()),
-        }))
-        .await
-        .expect("tool call ok");
+        })
+        .await;
     let text = serde_json::to_string(&ended.content).unwrap();
     assert!(
         text.contains(&format!("Report '{path_str}': 1 check, 1 passed, 0 failed")),
@@ -483,10 +482,7 @@ async fn test_tool_replies_without_a_report() {
     let text = serde_json::to_string(&started.content).unwrap();
     assert!(!text.contains("reporting"), "{text}");
 
-    let ended = server
-        .tui_end(Parameters(TuiEndParams::default()))
-        .await
-        .expect("tool call ok");
+    let ended = server.end(TuiEndParams::default()).await;
     let text = serde_json::to_string(&ended.content).unwrap();
     assert!(text.contains("Terminated session 'default'"), "{text}");
     assert!(!text.contains("Report"), "{text}");

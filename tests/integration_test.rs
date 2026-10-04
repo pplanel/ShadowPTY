@@ -182,17 +182,13 @@ async fn test_stop_app_terminates_and_reaps_process() {
 
 #[tokio::test]
 async fn test_tui_end_tool() {
-    use rmcp::handler::server::wrapper::Parameters;
     use shadowpty::server::{ShadowPtyServer, TuiEndParams};
 
     let manager = PtyManager::new();
     let server = ShadowPtyServer::new(manager.clone());
 
     // Calling tui_end with no active session returns an error CallToolResult
-    let result = server
-        .tui_end(Parameters(TuiEndParams::default()))
-        .await
-        .expect("tool call ok");
+    let result = server.end(TuiEndParams::default()).await;
     assert!(result.is_error.unwrap_or(false));
 
     // Start a session
@@ -205,10 +201,7 @@ async fn test_tui_end_tool() {
     assert!(is_process_running(pid));
 
     // Call tui_end
-    let result = server
-        .tui_end(Parameters(TuiEndParams::default()))
-        .await
-        .expect("tool call ok");
+    let result = server.end(TuiEndParams::default()).await;
     assert!(!result.is_error.unwrap_or(false));
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -401,11 +394,10 @@ async fn test_session_tools_route_by_session_id() {
     assert!(!read.is_error.unwrap_or(false));
 
     let ended = server
-        .tui_end(Parameters(TuiEndParams {
+        .end(TuiEndParams {
             session_id: Some("tool-sess".to_string()),
-        }))
-        .await
-        .expect("tool call ok");
+        })
+        .await;
     assert!(!ended.is_error.unwrap_or(false));
     assert!(manager.list_sessions().await.is_empty());
 }

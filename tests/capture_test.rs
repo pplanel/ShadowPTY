@@ -1,20 +1,21 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-//! End-to-end tests for asking the person how to capture sessions: a real MCP client, connected
-//! over an in-memory pipe, answers (or can't answer) the form `tui_start` sends. Each test runs
-//! with both lifecycles: the legacy `initialize` handshake, where the server sends the form during
-//! the call, and `server/discover` (protocol 2026-07-28), where `tui_start` returns the form as an
-//! input request and the client retries the call with the answer.
+//! End-to-end tests for how sessions are captured when the agent leaves it to the person: a
+//! real MCP client, connected over an in-memory pipe, answers (or doesn't) the capture form.
+//!
+//! `tui_start` never waits for the person. Until they decide, a session records and writes its
+//! report to the default files. With the legacy `initialize` lifecycle the form goes out in the
+//! background as the session starts; with `server/discover` (protocol 2026-07-28) `tui_end`
+//! returns it as an input request and the client retries the call with the answer.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
-    ElicitRequestParams, ElicitResult, ElicitationAction, Implementation, InputRequiredResult,
-    ProtocolVersion,
+    ElicitRequestParams, ElicitResult, ElicitationAction, Implementation, ProtocolVersion,
 };
 use rmcp::service::{RequestContext, RunningService};
 use rmcp::{
@@ -42,6 +43,8 @@ enum Reply {
 struct Person {
     reply: Reply,
     asked: Arc<AtomicUsize>,
+    /// The fields of the last form shown.
+    fields: Arc<std::sync::Mutex<Vec<String>>>,
     hold: Option<Arc<Notify>>,
 }
 
@@ -50,12 +53,24 @@ impl Person {
         Self {
             reply,
             asked: Arc::new(AtomicUsize::new(0)),
+            fields: Arc::default(),
             hold: None,
+        }
+    }
+
+    fn holding(reply: Reply, hold: &Arc<Notify>) -> Self {
+        Self {
+            hold: Some(Arc::clone(hold)),
+            ..Self::new(reply)
         }
     }
 
     fn asked(&self) -> usize {
         self.asked.load(Ordering::SeqCst)
+    }
+
+    fn offered(&self, field: &str) -> bool {
+        self.fields.lock().unwrap().iter().any(|f| f == field)
     }
 }
 
@@ -82,19 +97,16 @@ impl ClientHandler for Person {
             return Ok(ElicitResult::new(ElicitationAction::Decline));
         };
         let schema = serde_json::to_value(&requested_schema).unwrap();
-        for field in [
-            "record",
-            "record_path",
-            "report",
-            "report_path",
-            "live",
-            "open_browser",
-        ] {
-            assert!(
-                schema["properties"].get(field).is_some(),
-                "{field}: {schema}"
-            );
+        let fields: Vec<String> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for field in ["record", "record_path", "report", "report_path"] {
+            assert!(fields.iter().any(|f| f == field), "{field}: {schema}");
         }
+        *self.fields.lock().unwrap() = fields;
         if let Some(hold) = &self.hold {
             hold.notified().await;
         }
@@ -122,12 +134,17 @@ fn lifecycles() -> [ClientLifecycleMode; 2] {
     [initialize(), discover()]
 }
 
+type Client = RunningService<RoleClient, Person>;
+
+/// A server whose default files go to `dir`, with `timeout` to answer a background form.
 async fn connect(
     person: Person,
     lifecycle: ClientLifecycleMode,
-) -> (RunningService<RoleClient, Person>, PtyManager) {
+    dir: &Path,
+    timeout: Duration,
+) -> (Client, PtyManager) {
     let manager = PtyManager::new();
-    let server = ShadowPtyServer::new(manager.clone());
+    let server = ShadowPtyServer::new(manager.clone()).with_capture(dir.to_path_buf(), timeout);
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         let service = server.serve(server_io).await.expect("serve");
@@ -140,7 +157,19 @@ async fn connect(
     (client, manager)
 }
 
-/// `tui_start` arguments for a long-running session, plus `extra` fields.
+/// A fresh directory for the default files.
+fn temp(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("shadowpty_capture_{}_{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn path(dir: &Path, file: &str) -> String {
+    dir.join(file).to_string_lossy().into_owned()
+}
+
+/// `tui_start` arguments for a long-running `sh` session, plus `extra` fields.
 fn start_params(session_id: &str, extra: &Value) -> CallToolRequestParams {
     let mut args =
         json!({"command": "sh", "args": ["-c", "echo hi; sleep 30"], "session_id": session_id});
@@ -150,6 +179,15 @@ fn start_params(session_id: &str, extra: &Value) -> CallToolRequestParams {
     CallToolRequestParams::new("tui_start").with_arguments(args.as_object().unwrap().clone())
 }
 
+fn end_params(session_id: &str) -> CallToolRequestParams {
+    CallToolRequestParams::new("tui_end").with_arguments(
+        json!({"session_id": session_id})
+            .as_object()
+            .unwrap()
+            .clone(),
+    )
+}
+
 fn text_of(result: &CallToolResult) -> String {
     let content = serde_json::to_value(&result.content).unwrap();
     let text = content[0]["text"].as_str().unwrap().to_string();
@@ -157,246 +195,299 @@ fn text_of(result: &CallToolResult) -> String {
     text
 }
 
-async fn start(client: &RunningService<RoleClient, Person>, session_id: &str) -> String {
-    let result = client
-        .call_tool(start_params(session_id, &json!({})))
+/// Starts a session; fails if `tui_start` waits on the person.
+async fn start(client: &Client, session_id: &str) -> String {
+    start_with(client, start_params(session_id, &json!({}))).await
+}
+
+async fn start_with(client: &Client, params: CallToolRequestParams) -> String {
+    let result = tokio::time::timeout(Duration::from_secs(10), client.call_tool(params))
         .await
+        .expect("tui_start waited on the person")
         .expect("call tui_start");
     text_of(&result)
 }
 
+/// Ends a session, answering any form the server returns.
+async fn end(client: &Client, session_id: &str) -> String {
+    let result = client
+        .call_tool(end_params(session_id))
+        .await
+        .expect("call tui_end");
+    text_of(&result)
+}
+
 /// One `tools/call` round, without answering any form the server returns.
-async fn start_once(
-    client: &RunningService<RoleClient, Person>,
-    params: CallToolRequestParams,
-) -> CallToolResponse {
-    client.call_tool_once(params).await.expect("call tui_start")
+async fn call_once(client: &Client, params: CallToolRequestParams) -> CallToolResponse {
+    client.call_tool_once(params).await.expect("call")
 }
 
-/// The tool result, when the server didn't ask for input.
-fn complete(response: CallToolResponse) -> Option<CallToolResult> {
-    match response {
-        CallToolResponse::Complete(result) => Some(result),
-        _ => None,
-    }
+fn exists(file: &str) -> bool {
+    Path::new(file).exists()
 }
 
-/// The input request, when the server returned the form.
-fn input_required(response: CallToolResponse) -> Option<InputRequiredResult> {
-    match response {
-        CallToolResponse::InputRequired(result) => Some(result),
-        _ => None,
-    }
-}
-
-fn temp(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("shadowpty_capture_{}_{name}", std::process::id()))
-}
-
+/// The agent is told it may offer the person more.
 const HINT: &str = "Ask the person whether they want";
 
 #[tokio::test]
-async fn test_person_is_asked_once_and_answer_applies_to_later_sessions() {
-    for (n, lifecycle) in lifecycles().into_iter().enumerate() {
-        let dir = temp(&format!("asked{n}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        let record = dir.join("app.cast");
-        let person = Person::new(Reply::Accept(
-            json!({"record": true, "record_path": record, "live": false}),
-        ));
-        let (client, manager) = connect(person.clone(), lifecycle).await;
-
-        let first = start(&client, "one").await;
-        assert!(
-            first.contains(&format!("recording to '{}'", record.display())),
-            "{first}"
-        );
-        assert!(!first.contains(HINT), "{first}");
-
-        let second = start(&client, "two").await;
-        let second_record = dir.join("app-2.cast");
-        assert!(
-            second.contains(&format!("recording to '{}'", second_record.display())),
-            "{second}"
-        );
-        assert_eq!(person.asked(), 1, "asked once per server");
-
-        manager.stop_session("one").await.unwrap();
-        manager.stop_session("two").await.unwrap();
-        assert!(record.exists() && second_record.exists());
-        let _ = client.cancel().await;
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-#[tokio::test]
-async fn test_client_without_forms_gets_a_hint_once() {
-    for lifecycle in lifecycles() {
-        let person = Person::new(Reply::NoForms);
-        let (client, manager) = connect(person.clone(), lifecycle).await;
-
-        let first = start(&client, "one").await;
-        assert!(first.contains(HINT), "{first}");
-        assert!(!first.contains("recording to"), "{first}");
-        let second = start(&client, "two").await;
-        assert!(!second.contains(HINT), "{second}");
-        assert_eq!(person.asked(), 0);
-
-        manager.stop_session("one").await.unwrap();
-        manager.stop_session("two").await.unwrap();
-        let _ = client.cancel().await;
-    }
-}
-
-#[tokio::test]
-async fn test_declined_captures_nothing_and_gives_no_hint() {
-    for lifecycle in lifecycles() {
-        let person = Person::new(Reply::Decline);
-        let (client, manager) = connect(person.clone(), lifecycle).await;
-
-        for session in ["one", "two"] {
-            let text = start(&client, session).await;
-            assert!(!text.contains("recording to"), "{text}");
-            assert!(!text.contains("reporting to"), "{text}");
-            assert!(!text.contains("watch live"), "{text}");
-            assert!(!text.contains(HINT), "{text}");
-        }
-        assert_eq!(person.asked(), 1, "a declined form isn't shown again");
-
-        manager.stop_session("one").await.unwrap();
-        manager.stop_session("two").await.unwrap();
-        let _ = client.cancel().await;
-    }
-}
-
-#[tokio::test]
-async fn test_closed_form_gives_a_hint_once() {
-    for lifecycle in lifecycles() {
-        let person = Person::new(Reply::Cancel);
-        let (client, manager) = connect(person.clone(), lifecycle).await;
-
-        let first = start(&client, "one").await;
-        assert!(first.contains(HINT), "{first}");
-        assert!(!first.contains("recording to"), "{first}");
-        let second = start(&client, "two").await;
-        assert!(!second.contains(HINT), "{second}");
-        assert_eq!(person.asked(), 1, "a closed form isn't shown again");
-
-        manager.stop_session("one").await.unwrap();
-        manager.stop_session("two").await.unwrap();
-        let _ = client.cancel().await;
-    }
-}
-
-#[tokio::test]
-async fn test_retry_without_an_answer_does_not_send_the_form_again() {
-    let person = Person::new(Reply::Accept(json!({"record": true})));
-    let (client, manager) = connect(person.clone(), discover()).await;
-
-    let form = input_required(start_once(&client, start_params("one", &json!({}))).await)
-        .expect("the capture form");
-    let state = form.request_state.clone().expect("request state");
-
-    // A client that sends the form back while it is out doesn't get a second one
-    let other = complete(start_once(&client, start_params("other", &json!({}))).await)
-        .expect("the form was sent twice");
-    let other = text_of(&other);
-    assert!(
-        !other.contains("recording to") && !other.contains(HINT),
-        "{other}"
-    );
-
-    // Coming back with the request state but no answer means the form was closed
-    let mut retry = start_params("one", &json!({}));
-    retry.request_state = Some(state);
-    let first = complete(start_once(&client, retry).await)
-        .expect("the form was sent again after the retry");
-    let first = text_of(&first);
-    assert!(first.contains(HINT), "{first}");
-    assert!(!first.contains("recording to"), "{first}");
-
-    let later = start(&client, "two").await;
-    assert!(!later.contains(HINT), "{later}");
-    assert_eq!(person.asked(), 0, "the form was never shown");
-
-    for session in ["one", "other", "two"] {
-        manager.stop_session(session).await.unwrap();
-    }
-    let _ = client.cancel().await;
-}
-
-#[tokio::test]
-async fn test_explicit_start_is_not_blocked_while_the_person_answers() {
-    let dir = temp("held");
-    std::fs::create_dir_all(&dir).unwrap();
-    let record = dir.join("app.cast");
+async fn test_background_form_does_not_block_start_and_its_answer_moves_the_files() {
+    let dir = temp("background");
+    let kept = path(&dir, "kept.cast");
     let hold = Arc::new(Notify::new());
-    let person = Person {
-        hold: Some(hold.clone()),
-        ..Person::new(Reply::Accept(
-            json!({"record": true, "record_path": record, "live": false}),
-        ))
-    };
-    let (client, manager) = connect(person.clone(), initialize()).await;
+    let person = Person::holding(
+        Reply::Accept(json!({"record": true, "record_path": kept, "report": false})),
+        &hold,
+    );
+    let (client, _manager) =
+        connect(person.clone(), initialize(), &dir, Duration::from_secs(30)).await;
 
-    let peer = client.peer().clone();
-    let asking = tokio::spawn(async move {
-        peer.call_tool_once(start_params("one", &json!({})))
-            .await
-            .expect("call tui_start")
-    });
+    // The session starts while the person still has the form open
+    let started = start(&client, "one").await;
+    assert!(
+        started.contains(&format!("recording to '{}'", path(&dir, "sh.cast"))),
+        "{started}"
+    );
+    assert!(started.contains("is being asked"), "{started}");
     tokio::time::timeout(Duration::from_secs(10), async {
         while person.asked() == 0 {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("the person is asked");
-
-    // A start that needs the answer waits for it instead of asking again
-    let peer = client.peer().clone();
-    let waiting = tokio::spawn(async move {
-        peer.call_tool_once(start_params("two", &json!({})))
-            .await
-            .expect("call tui_start")
-    });
-
-    // A start that names its own capture doesn't wait for the person
-    let explicit = tokio::time::timeout(
-        Duration::from_secs(10),
-        client.call_tool(start_params("explicit", &json!({"live": false}))),
-    )
-    .await
-    .expect("explicit start blocked by the pending form")
-    .expect("call tui_start");
-    let explicit = text_of(&explicit);
-    assert!(!explicit.contains("recording to"), "{explicit}");
+    .expect("the person is asked in the background");
     assert!(
-        !waiting.is_finished(),
-        "start without capture didn't wait for the answer"
+        person.offered("live"),
+        "the start form offers watching live"
     );
 
     hold.notify_one();
-    let first = complete(asking.await.unwrap()).expect("first start");
-    let second = complete(waiting.await.unwrap()).expect("second start");
-    let first = text_of(&first);
-    let second = text_of(&second);
+    let ended = end(&client, "one").await;
     assert!(
-        first.contains(&format!("recording to '{}'", record.display())),
-        "{first}"
+        ended.contains(&format!("Recording saved to '{kept}'")),
+        "{ended}"
     );
-    assert!(
-        second.contains(&format!(
-            "recording to '{}'",
-            dir.join("app-2.cast").display()
-        )),
-        "{second}"
-    );
-    assert_eq!(person.asked(), 1, "asked once");
+    assert!(ended.contains("Report deleted"), "{ended}");
+    assert!(exists(&kept));
+    assert!(!exists(&path(&dir, "sh.cast")));
+    assert!(!exists(&path(&dir, "sh.report.jsonl")));
 
-    for session in ["one", "two", "explicit"] {
-        manager.stop_session(session).await.unwrap();
-    }
+    // Later sessions take the answer from the start, without asking again
+    let later = start(&client, "two").await;
+    assert!(
+        later.contains(&format!("recording to '{}'", path(&dir, "kept-2.cast"))),
+        "{later}"
+    );
+    assert!(!later.contains("reporting to"), "{later}");
+    assert_eq!(person.asked(), 1);
+    end(&client, "two").await;
+
     let _ = client.cancel().await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_unanswered_background_form_keeps_the_defaults() {
+    let dir = temp("timeout");
+    let hold = Arc::new(Notify::new());
+    let person = Person::holding(Reply::Accept(json!({"record": false})), &hold);
+    let (client, _manager) = connect(
+        person.clone(),
+        initialize(),
+        &dir,
+        Duration::from_millis(500),
+    )
+    .await;
+
+    start(&client, "one").await;
+    // tui_end waits for the form's timeout, then keeps both files
+    let ended = end(&client, "one").await;
+    let record = path(&dir, "sh.cast");
+    let report = path(&dir, "sh.report.jsonl");
+    assert!(
+        ended.contains(&format!("Recording saved to '{record}'")),
+        "{ended}"
+    );
+    assert!(ended.contains(&format!("Report '{report}'")), "{ended}");
+    assert!(exists(&record) && exists(&report));
+
+    // The defaults now apply from the start, and the agent hears once that it may offer more
+    let later = start(&client, "two").await;
+    assert!(
+        later.contains(&format!("recording to '{}'", path(&dir, "sh-2.cast"))),
+        "{later}"
+    );
+    assert!(later.contains(HINT), "{later}");
+    let third = start(&client, "three").await;
+    assert!(!third.contains(HINT), "{third}");
+    end(&client, "two").await;
+    end(&client, "three").await;
+    assert_eq!(person.asked(), 1);
+
+    hold.notify_waiters();
+    let _ = client.cancel().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_form_at_end_on_2026_07_28() {
+    let dir = temp("at_end");
+    let kept = path(&dir, "kept.cast");
+    let person = Person::new(Reply::Accept(
+        json!({"record": true, "record_path": kept, "report": false}),
+    ));
+    let (client, _manager) =
+        connect(person.clone(), discover(), &dir, Duration::from_secs(30)).await;
+
+    let started = start(&client, "one").await;
+    assert!(
+        started.contains(&format!("recording to '{}'", path(&dir, "sh.cast"))),
+        "{started}"
+    );
+    assert!(started.contains("When this session ends"), "{started}");
+    assert_eq!(person.asked(), 0, "not asked as the session starts");
+
+    let ended = end(&client, "one").await;
+    assert_eq!(person.asked(), 1);
+    assert!(!person.offered("live"), "too late to watch live");
+    assert!(
+        ended.contains(&format!("Recording saved to '{kept}'")),
+        "{ended}"
+    );
+    assert!(ended.contains("Report deleted"), "{ended}");
+    assert!(exists(&kept) && !exists(&path(&dir, "sh.report.jsonl")));
+
+    let later = start(&client, "two").await;
+    assert!(
+        later.contains(&format!("recording to '{}'", path(&dir, "kept-2.cast"))),
+        "{later}"
+    );
+    end(&client, "two").await;
+    assert_eq!(person.asked(), 1, "asked once per server");
+
+    let _ = client.cancel().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_retry_without_an_answer_keeps_the_defaults() {
+    let dir = temp("retry");
+    let person = Person::new(Reply::Accept(json!({"record": false})));
+    let (client, _manager) =
+        connect(person.clone(), discover(), &dir, Duration::from_secs(30)).await;
+
+    start(&client, "one").await;
+    start(&client, "other").await;
+    let CallToolResponse::InputRequired(form) = call_once(&client, end_params("one")).await else {
+        panic!("tui_end didn't return the capture form");
+    };
+    let state = form.request_state.clone().expect("request state");
+
+    // Another session ending while the form is out keeps its defaults, without a second form
+    let CallToolResponse::Complete(other) = call_once(&client, end_params("other")).await else {
+        panic!("the form was sent twice");
+    };
+    let other = text_of(&other);
+    assert!(
+        other.contains(&format!("Recording saved to '{}'", path(&dir, "sh-2.cast"))),
+        "{other}"
+    );
+
+    // Coming back with the request state but no answer means the form was closed
+    let mut retry = end_params("one");
+    retry.request_state = Some(state);
+    let CallToolResponse::Complete(first) = call_once(&client, retry).await else {
+        panic!("the form was sent again after the retry");
+    };
+    let first = text_of(&first);
+    assert!(
+        first.contains(&format!("Recording saved to '{}'", path(&dir, "sh.cast"))),
+        "{first}"
+    );
+    assert_eq!(person.asked(), 0, "the form was never shown");
+
+    let _ = client.cancel().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_declined_or_closed_form_keeps_the_defaults() {
+    for (n, (reply, hint)) in [(Reply::Decline, false), (Reply::Cancel, true)]
+        .into_iter()
+        .enumerate()
+    {
+        for (m, lifecycle) in lifecycles().into_iter().enumerate() {
+            let dir = temp(&format!("no_answer{n}{m}"));
+            let person = Person::new(reply.clone());
+            let (client, _manager) =
+                connect(person.clone(), lifecycle, &dir, Duration::from_secs(30)).await;
+
+            start(&client, "one").await;
+            let ended = end(&client, "one").await;
+            let record = path(&dir, "sh.cast");
+            assert!(
+                ended.contains(&format!("Recording saved to '{record}'")),
+                "{ended}"
+            );
+            assert!(exists(&record) && exists(&path(&dir, "sh.report.jsonl")));
+
+            // Declining isn't nagged about; a closed form gets the hint once
+            let later = start(&client, "two").await;
+            assert!(
+                later.contains(&format!("recording to '{}'", path(&dir, "sh-2.cast"))),
+                "{later}"
+            );
+            assert_eq!(later.contains(HINT), hint, "{later}");
+            end(&client, "two").await;
+            assert_eq!(person.asked(), 1);
+
+            let _ = client.cancel().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_client_without_forms_keeps_the_defaults_and_gets_a_hint_once() {
+    for (n, lifecycle) in lifecycles().into_iter().enumerate() {
+        let dir = temp(&format!("no_forms{n}"));
+        let person = Person::new(Reply::NoForms);
+        let (client, _manager) =
+            connect(person.clone(), lifecycle, &dir, Duration::from_secs(30)).await;
+
+        let first = start(&client, "one").await;
+        assert!(
+            first.contains(&format!("recording to '{}'", path(&dir, "sh.cast"))),
+            "{first}"
+        );
+        assert!(first.contains(HINT), "{first}");
+        let second = start(&client, "two").await;
+        assert!(!second.contains(HINT), "{second}");
+        end(&client, "one").await;
+        end(&client, "two").await;
+        assert!(exists(&path(&dir, "sh.cast")) && exists(&path(&dir, "sh-2.cast")));
+        assert_eq!(person.asked(), 0);
+
+        let _ = client.cancel().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[tokio::test]
+async fn test_explicit_start_captures_only_what_it_asks_for() {
+    for (n, lifecycle) in lifecycles().into_iter().enumerate() {
+        let dir = temp(&format!("explicit{n}"));
+        let person = Person::new(Reply::Accept(json!({"record": true})));
+        let (client, _manager) =
+            connect(person.clone(), lifecycle, &dir, Duration::from_secs(30)).await;
+
+        let started = start_with(&client, start_params("one", &json!({"live": false}))).await;
+        assert!(!started.contains("recording to"), "{started}");
+        let ended = end(&client, "one").await;
+        assert!(!ended.contains("Recording"), "{ended}");
+        assert_eq!(person.asked(), 0);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no files");
+
+        let _ = client.cancel().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -352,11 +352,10 @@ async fn test_ended_session_keeps_its_last_frame() {
     wait_on_screen(&manager, "live-end", "FINAL_SCREEN").await;
 
     let ended = server
-        .tui_end(Parameters(TuiEndParams {
+        .end(TuiEndParams {
             session_id: Some("live-end".to_string()),
-        }))
-        .await
-        .expect("tool call ok");
+        })
+        .await;
     assert!(!ended.is_error.unwrap_or(false));
 
     // A viewer who arrives after the end still sees the final screen, and that it ended
@@ -468,11 +467,10 @@ async fn test_session_report_reaches_the_viewer() {
 
     // Then live: ending the session sends its exit and summary
     server
-        .tui_end(Parameters(TuiEndParams {
+        .end(TuiEndParams {
             session_id: Some("live-checks".to_string()),
-        }))
-        .await
-        .expect("tool call ok");
+        })
+        .await;
     let summary = events.until("report", |e| e["type"] == "summary").await;
     assert_eq!(summary["checks"], 1, "{summary}");
     assert_eq!(summary["passed"], 1, "{summary}");

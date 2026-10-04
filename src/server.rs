@@ -1,6 +1,7 @@
 //! MCP Tool Router implementation for `ShadowPTY`.
 
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::capture::{self, Capture, Requested};
+use crate::capture::{self, Capture, Note, Reach, Requested};
 use crate::client_log::{ClientLog, ClientSeen};
 use crate::live::LiveServer;
 use crate::output::{Pattern, Syntax};
@@ -376,9 +377,6 @@ pub struct ShadowPtyServer {
     capture: Arc<tokio::sync::Mutex<Capture>>,
     /// Logs the connected client once, see [`crate::client_log`].
     client_log: Arc<ClientLog>,
-    /// Held by the start that asks the person, so other starts that need the answer wait for
-    /// it instead of asking twice. Starts that don't need the answer never take it.
-    asking: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ShadowPtyServer {
@@ -389,8 +387,15 @@ impl ShadowPtyServer {
             live: Arc::new(tokio::sync::OnceCell::new()),
             capture: Arc::new(tokio::sync::Mutex::new(Capture::default())),
             client_log: Arc::new(ClientLog::default()),
-            asking: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Puts the default recording and report files in `dir` instead of the working directory,
+    /// and gives the person `timeout` to answer the capture form sent as a session starts.
+    #[must_use]
+    pub fn with_capture(mut self, dir: PathBuf, timeout: Duration) -> Self {
+        self.capture = Arc::new(tokio::sync::Mutex::new(Capture::new(Some(dir), timeout)));
+        self
     }
 
     /// Adds a screenshot that was rendered (and saved, if it has a path) to the session report.
@@ -415,62 +420,154 @@ impl ShadowPtyServer {
             live.forget(session_id);
         }
     }
+
+    /// Opens the live page of `session_id` in the person's browser, the first time only.
+    async fn open_live(&self, session_id: &str, url: &str) -> Option<std::io::Result<()>> {
+        let first = self.capture.lock().await.first_open(session_id);
+        first.then(|| capture::open_in_browser(url))
+    }
 }
 
 impl ShadowPtyServer {
-    /// `tui_start` without a client to ask: when the person hasn't been asked, the agent is told
-    /// once about the capture options instead.
+    /// `tui_start` without a client: never asks the person and captures only what `params`
+    /// asks for.
     pub async fn start(&self, params: TuiStartParams) -> CallToolResult {
-        // Without a client to ask there's never a form to return
-        let plan = self
-            .plan_capture(&params, Asking::No)
-            .await
-            .unwrap_or_default();
-        self.launch(params, plan).await
+        self.start_with(params, None).await
     }
 
-    /// How the session is captured: what the agent passed, then the person's answer (asking
-    /// them first if they haven't been, see [`capture`]). `Err` is the form to return to the
-    /// client, which calls `tui_start` again with the answer.
-    async fn plan_capture(
+    /// `tui_end` without a client: a session still waiting for the person's decision keeps its
+    /// files where they are.
+    pub async fn end(&self, params: TuiEndParams) -> CallToolResult {
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
+        let settled = self.capture.lock().await.settle(session_id);
+        self.finish(session_id, settled).await
+    }
+
+    /// Plans the session's capture, starts it, and sends the capture form in the background
+    /// when the plan says so. `client` is how to reach the person, if there's a client.
+    async fn start_with(
         &self,
-        params: &TuiStartParams,
-        asking: Asking<'_>,
-    ) -> Result<capture::Plan, InputRequiredResult> {
+        params: TuiStartParams,
+        client: Option<(&Peer<RoleServer>, Reach)>,
+    ) -> CallToolResult {
+        let reach = client.map_or(Reach::Library, |(_, reach)| reach);
+        let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
         let requested = Requested {
             record_path: params.record_path.as_deref(),
             report_path: params.report_path.as_deref(),
             live: params.live,
         };
-        // Only a start that may need the answer waits for whoever is asking the person
-        let needs_answer = self.capture.lock().await.should_ask(&requested);
-        let asking_turn = if needs_answer {
-            Some(self.asking.lock().await)
-        } else {
-            None
-        };
         let mut capture = self.capture.lock().await;
-        let answer = if capture.should_ask(&requested) {
-            match asking {
-                Asking::No => Some(capture::Answer::Unsupported),
-                Asking::During(peer) => {
-                    // Starts that don't need the answer go ahead while the person answers
+        let plan = capture.plan((session_id, &params.command), &requested, reach);
+        let background = match (plan.ask_now, client) {
+            (true, Some((peer, _))) => {
+                let (done, waiting) = tokio::sync::watch::channel(false);
+                capture.asking_in_background(waiting);
+                let pending = capture.pending(session_id).cloned();
+                pending.map(|pending| (peer.clone(), pending, done, capture.timeout()))
+            }
+            _ => None,
+        };
+        drop(capture);
+
+        let result = self.launch(&params, &plan).await;
+        if result.is_error == Some(true) {
+            // No session to ask about: the next start asks instead
+            self.capture.lock().await.abandon(session_id, plan.ask_now);
+            return result;
+        }
+        if let Some((peer, pending, done, timeout)) = background {
+            let server = self.clone();
+            let ask = BackgroundAsk {
+                session_id: session_id.to_string(),
+                command_line: command_line(&params.command, &params.args),
+                pending,
+                timeout,
+            };
+            tokio::spawn(async move { server.ask_in_background(&peer, ask, done).await });
+        }
+        result
+    }
+
+    /// Sends the capture form while the session runs, then applies the answer: it settles the
+    /// session's files at `tui_end`, and opens the live page if the person asked for it.
+    async fn ask_in_background(
+        &self,
+        peer: &Peer<RoleServer>,
+        ask: BackgroundAsk,
+        done: tokio::sync::watch::Sender<bool>,
+    ) {
+        let defaults = ask.pending.defaults();
+        let answer = capture::ask(
+            peer,
+            (&ask.pending.command, &defaults),
+            capture::Moment::Start,
+            ask.timeout,
+        )
+        .await;
+        let live = matches!(&answer, capture::Answer::Chose(choices) if choices.live);
+        self.capture.lock().await.answer(answer);
+        let _ = done.send(true);
+        if live && self.manager.is_session_active(&ask.session_id).await {
+            match self.watch_live(&ask.session_id, &ask.command_line).await {
+                Ok(url) => {
+                    if let Some(Err(e)) = self.open_live(&ask.session_id, &url).await {
+                        tracing::warn!("Couldn't open the live page {url}: {e}");
+                    }
+                }
+                Err(e) => tracing::warn!("The live viewer is unavailable: {e:#}"),
+            }
+        }
+    }
+
+    /// What happens to the files of session `session_id` as it ends: the person's decision,
+    /// asking for it first when needed. `Err` is the form to return to the client, which calls
+    /// `tui_end` again with the answer.
+    async fn settle_capture(
+        &self,
+        session_id: &str,
+        reach: Reach,
+        client: (&Peer<RoleServer>, &Retry),
+    ) -> Result<Option<capture::Settled>, InputRequiredResult> {
+        let (peer, retry) = client;
+        let mut capture = self.capture.lock().await;
+        let Some(pending) = capture.pending(session_id).cloned() else {
+            return Ok(None);
+        };
+        // A background form is still out: wait for it (at most its timeout), without the lock
+        if let Some(mut done) = capture.waiting() {
+            let limit = capture.timeout() + BACKGROUND_GRACE;
+            drop(capture);
+            let _ = tokio::time::timeout(limit, done.wait_for(|done| *done)).await;
+            capture = self.capture.lock().await;
+        }
+        if !capture.decided() && capture.waiting().is_none() {
+            let defaults = pending.defaults();
+            let answer = match reach {
+                Reach::Library | Reach::NoForms => Some(capture::Answer::Unsupported),
+                Reach::Background => {
+                    let timeout = capture.timeout();
                     drop(capture);
-                    let answer = capture::ask(peer, &params.command).await;
+                    let answer = capture::ask(
+                        peer,
+                        (&pending.command, &defaults),
+                        capture::Moment::End,
+                        timeout,
+                    )
+                    .await;
                     capture = self.capture.lock().await;
                     Some(answer)
                 }
-                Asking::Retry(retry) => match retry.response() {
-                    Some(response) => Some(capture::read_response(response, &params.command)),
+                Reach::AtEnd => match retry.response() {
+                    Some(response) => Some(capture::read_response(response, &defaults)),
                     // The client came back from the form without an answer: it was closed
                     None if retry.after_form() => Some(capture::Answer::Dismissed),
-                    // Another call's form is out; don't show a second one
+                    // Another session's form is out: this one keeps the defaults
                     None if capture.form_out() => None,
-                    None => match capture::input_request(&params.command) {
+                    None => match capture::input_request(&pending.command, &defaults) {
                         Ok(form) => {
-                            capture.send_form();
+                            capture.form_sent();
                             drop(capture);
-                            drop(asking_turn);
                             return Err(form);
                         }
                         Err(e) => {
@@ -479,21 +576,57 @@ impl ShadowPtyServer {
                         }
                     },
                 },
+            };
+            if let Some(answer) = answer {
+                capture.answer(answer);
             }
-        } else {
-            None
-        };
-        if let Some(answer) = answer {
-            capture.answer(answer);
         }
-        let plan = capture.plan(&requested);
+        let settled = capture.settle(session_id);
         drop(capture);
-        drop(asking_turn);
-        Ok(plan)
+        Ok(settled)
+    }
+
+    /// Stops the session, then moves or deletes its files as `settled` says.
+    async fn finish(&self, session_id: &str, settled: Option<capture::Settled>) -> CallToolResult {
+        if let Some(live) = self.live.get() {
+            live.capture_final_frame(&self.manager, session_id).await;
+        }
+        let stopped = match self.manager.stop_session(session_id).await {
+            Ok(stopped) => stopped,
+            Err(e) => return error_result(format!("Failed to terminate session: {e:#}")),
+        };
+        let pid_str = stopped
+            .info
+            .pid
+            .map_or_else(|| "unknown".to_string(), |p| p.to_string());
+        let cmd = &stopped.info.command;
+        let mut msg =
+            format!("Terminated session '{session_id}' for command '{cmd}' (pid: {pid_str})");
+        let mut report_path = stopped.report_path.clone();
+        if let Some(settled) = settled {
+            let (done, problems) = capture::carry_out(settled).await;
+            match done.record.kept_at() {
+                Some(path) => {
+                    let _ = write!(msg, ". Recording saved to '{path}'");
+                }
+                None => msg.push_str(". Recording deleted, as the person chose"),
+            }
+            report_path = done.report.kept_at().map(str::to_string);
+            if report_path.is_none() {
+                msg.push_str(". Report deleted, as the person chose");
+            }
+            for problem in problems {
+                let _ = write!(msg, ". Note: {problem}");
+            }
+        }
+        if let Some(path) = &report_path {
+            let _ = write!(msg, ". Report '{path}': {}", stopped.totals);
+        }
+        text_result(msg)
     }
 
     /// Starts the session, captured as `plan` says.
-    async fn launch(&self, params: TuiStartParams, plan: capture::Plan) -> CallToolResult {
+    async fn launch(&self, params: &TuiStartParams, plan: &capture::Plan) -> CallToolResult {
         let rows = params.rows.unwrap_or(24);
         let cols = params.cols.unwrap_or(80);
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
@@ -504,9 +637,7 @@ impl ShadowPtyServer {
         let info = match self.manager.start_session(session_id, &config).await {
             Ok(info) => info,
             Err(e) => {
-                return CallToolResult::error(vec![rmcp::model::ContentBlock::text(format!(
-                    "Failed to start process: {e:#}"
-                ))]);
+                return error_result(format!("Failed to start process: {e:#}"));
             }
         };
         let pid_str = info
@@ -531,15 +662,16 @@ impl ShadowPtyServer {
             match self.watch_live(session_id, &command).await {
                 Ok(url) => {
                     let _ = write!(msg, ", watch live at {url}");
-                    if plan.open_browser && self.capture.lock().await.first_open(session_id) {
-                        match capture::open_in_browser(&url) {
-                            Ok(()) => msg.push_str(" (opened in the person's browser)"),
-                            Err(e) => {
+                    if plan.open_browser {
+                        match self.open_live(session_id, &url).await {
+                            Some(Ok(())) => msg.push_str(" (opened in the person's browser)"),
+                            Some(Err(e)) => {
                                 let _ = write!(
                                     msg,
                                     " (couldn't open the browser: {e}; give the person the link)"
                                 );
                             }
+                            None => {}
                         }
                     }
                 }
@@ -550,27 +682,51 @@ impl ShadowPtyServer {
         } else {
             self.forget_live(session_id);
         }
-        if plan.hint {
-            msg.push_str(
-                "\nShadowPTY can also record sessions (record_path), write a report of every check (report_path) or show the session to the person in their browser as it runs (live: true). Ask the person whether they want any of these.",
-            );
+        if let Some(note) = plan.note {
+            msg.push('\n');
+            msg.push_str(match note {
+                Note::Defaults => {
+                    "These are the default files. ShadowPTY can also record elsewhere (record_path, report_path) or show the session to the person in their browser as it runs (live: true). Ask the person whether they want any of these."
+                }
+                Note::AskingNow => {
+                    "The person is being asked how to keep this session's recording and report, and whether to watch it live. Until they answer, both go to the files above, and they're kept if no answer comes."
+                }
+                Note::AskAtEnd => {
+                    "When this session ends, tui_end asks the person whether to keep the recording and report and where; until then both go to the files above. To let the person watch live, ask them and start with live: true."
+                }
+            });
         }
         text_result(msg)
     }
 }
 
-/// How `tui_start` can reach the person to ask how sessions are captured.
-enum Asking<'a> {
-    /// It can't: no client, or one that can't show forms.
-    No,
-    /// Send the form to the client during the call (protocols before 2026-07-28).
-    During(&'a Peer<RoleServer>),
-    /// Return the form as an input request; the client calls again with the answer, if any
-    /// (2026-07-28 and later, where a server can't send requests to the client).
-    Retry(&'a Retry),
+/// Extra time to wait for a background form past its own timeout, for the answer to land.
+const BACKGROUND_GRACE: Duration = Duration::from_secs(2);
+
+/// A capture form sent in the background as session `session_id` starts.
+struct BackgroundAsk {
+    session_id: String,
+    /// The command line, as shown on the live page.
+    command_line: String,
+    pending: capture::Pending,
+    timeout: Duration,
 }
 
-/// What a client sends when it calls `tui_start` again after the capture form (protocol
+/// How the client can reach the person, from its capabilities and protocol.
+fn reach(context: &RequestContext<RoleServer>) -> Reach {
+    if !capture::supports_forms(context.client_capabilities().as_ref()) {
+        Reach::NoForms
+    } else if context
+        .protocol_version()
+        .is_some_and(|v| v.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+    {
+        Reach::AtEnd
+    } else {
+        Reach::Background
+    }
+}
+
+/// What a client sends when it calls `tui_end` again after the capture form (protocol
 /// 2026-07-28): the person's answer, and the request state returned with the form.
 pub struct Retry {
     responses: Option<rmcp::model::InputResponses>,
@@ -619,34 +775,22 @@ impl ShadowPtyServer {
             idempotent_hint = false,
             open_world_hint = true
         ),
-        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once. With live: true, the reply includes a local link where a person can watch the session live in a browser (view-only); give them the link, don't open it. When record_path, report_path and live are all left unset, ShadowPTY asks the person once (through the client) how they want sessions captured and applies their answer to later sessions too."
+        description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once. With live: true, the reply includes a local link where a person can watch the session live in a browser (view-only); give them the link, don't open it. When record_path, report_path and live are all left unset, the session is recorded with a report to default files, and the person decides (in the background, or when tui_end is called) whether to keep them and where; their answer applies to later sessions too. tui_start never waits for the person."
     )]
     pub async fn tui_start(
         &self,
         Parameters(params): Parameters<TuiStartParams>,
         context: RequestContext<RoleServer>,
-        retry: Retry,
-    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Clients on 2026-07-28 skip `initialize` and send who they are with each request
         self.client_log.once(ClientSeen {
             protocol: context.protocol_version().as_ref(),
             client: context.client_info().as_ref(),
             capabilities: context.client_capabilities().as_ref(),
         });
-        let asking = if !capture::supports_forms(context.client_capabilities().as_ref()) {
-            Asking::No
-        } else if context
-            .protocol_version()
-            .is_some_and(|v| v.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
-        {
-            Asking::Retry(&retry)
-        } else {
-            Asking::During(&context.peer)
-        };
-        Ok(match self.plan_capture(&params, asking).await {
-            Ok(plan) => self.launch(params, plan).await.into(),
-            Err(form) => form.into(),
-        })
+        Ok(self
+            .start_with(params, Some((&context.peer, reach(&context))))
+            .await)
     }
 
     /// Sends raw keystrokes or symbolic tokens (<ENTER>, <UP>, <CTRL+C>, etc.) to the PTY.
@@ -1086,37 +1230,23 @@ impl ShadowPtyServer {
             idempotent_hint = true,
             open_world_hint = false
         ),
-        description = "Terminates a pseudo-terminal session, killing the running program and releasing resources. If the session writes a report, finishes it and says how many checks passed and failed."
+        description = "Terminates a pseudo-terminal session, killing the running program and releasing resources. If the session writes a report, finishes it and says how many checks passed and failed. If the person hasn't yet decided how to keep the session's recording and report, they may be asked now; the reply says where the files went."
     )]
     pub async fn tui_end(
         &self,
         Parameters(params): Parameters<TuiEndParams>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        context: RequestContext<RoleServer>,
+        retry: Retry,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let session_id = params.session_id.as_deref().unwrap_or(DEFAULT_SESSION_ID);
-        if let Some(live) = self.live.get() {
-            live.capture_final_frame(&self.manager, session_id).await;
-        }
-        match self.manager.stop_session(session_id).await {
-            Ok(stopped) => {
-                let pid_str = stopped
-                    .info
-                    .pid
-                    .map_or_else(|| "unknown".to_string(), |p| p.to_string());
-                let cmd = &stopped.info.command;
-                let mut msg = format!(
-                    "Terminated session '{session_id}' for command '{cmd}' (pid: {pid_str})"
-                );
-                if let Some(path) = &stopped.report_path {
-                    let _ = write!(msg, ". Report '{path}': {}", stopped.totals);
-                }
-                Ok(CallToolResult::success(vec![
-                    rmcp::model::ContentBlock::text(msg),
-                ]))
-            }
-            Err(e) => Ok(CallToolResult::error(vec![
-                rmcp::model::ContentBlock::text(format!("Failed to terminate session: {e:#}")),
-            ])),
-        }
+        let settled = match self
+            .settle_capture(session_id, reach(&context), (&context.peer, &retry))
+            .await
+        {
+            Ok(settled) => settled,
+            Err(form) => return Ok(form.into()),
+        };
+        Ok(self.finish(session_id, settled).await.into())
     }
 
     /// Takes a screenshot of the current screen state in PNG (or SVG) format.

@@ -76,24 +76,25 @@ Started command 'htop' in PTY session 'htop' (pid: 12345, rows: 43, cols: 155), 
 
 #### Asking the person
 
-When `record_path`, `report_path` and `live` are all left unset, the first `tui_start` asks the person how they want sessions captured, through an MCP [elicitation](https://modelcontextprotocol.io/specification/draft/client/elicitation) form the client shows them. The session starts once they answer. On protocol 2026-07-28 and later, `tui_start` returns the form as an input request and the client calls it again with the answer; on older protocols the server sends the form during the call.
+When `record_path`, `report_path` and `live` are all left unset, the person decides how the session is captured, through an MCP [elicitation](https://modelcontextprotocol.io/specification/draft/client/elicitation) form the client shows them. `tui_start` never waits for them: the session starts at once and records, with a report, to the default files until they decide. Their decision then moves or deletes the files when the session ends.
+
+- **Protocols before 2026-07-28:** the form goes out in the background as the session starts. It also offers watching live; if the person turns that on, the live page opens in their browser for the running session. Without an answer within 30 seconds, the defaults apply. A `tui_end` that comes while the form is still open waits for it (at most those 30 seconds).
+- **Protocol 2026-07-28 (e.g. Claude Code):** a server can only ask during a call, so `tui_end` returns the form as an input request and the client calls it again with the answer. It's too late to offer watching live then; the `tui_start` reply tells the agent to ask the person and pass `live: true`.
 
 | Field | Default | |
 | :--- | :--- | :--- |
-| `record`, `record_path` | off, `<cwd>/<command>.cast` | Record the session |
-| `report`, `report_path` | off, `<cwd>/<command>.report.jsonl` | Write a session report |
-| `live` | off | Serve the live viewer |
-| `open_browser` | on | With `live`, the server opens the page in the person's default browser (`open` on macOS, `xdg-open` elsewhere) instead of only returning the link |
+| `record`, `record_path` | on, `<cwd>/<command>.cast` | Keep the recording, and where |
+| `report`, `report_path` | on, `<cwd>/<command>.report.jsonl` | Keep the report, and where |
+| `live` (start form only) | off | Serve the live viewer and open it in the person's default browser (`open` on macOS, `xdg-open` elsewhere) |
 
-The default paths are in the server's working directory and never name an existing file (`htop-2.cast`, …). An empty path takes the default, and `~/` is expanded.
+The default paths are in the server's working directory and never name an existing file (`htop-2.cast`, …). An empty path takes the default, and `~/` is expanded. A file moved to another filesystem is copied, then removed.
 
-- The person is asked **once per server**. Their answer applies to every later session: the first session records to the chosen file, later ones to the next free name beside it (`app.cast`, `app-2.cast`, …). The live page of a session id is opened once; restarting the id switches the open page to the new session.
-- What the agent passes always wins, field by field. A call that sets any of the three fields doesn't trigger the form.
-- Declining the form means capture nothing.
-- If the client can't show forms, or the person closes the form (or doesn't answer within 10 minutes), the session starts without capture and the first reply ends with a hint for the agent to offer these options. It shows up once. On 2026-07-28, a call that comes back with the form's `requestState` but no answer counts as closing the form.
-- While the person answers, other `tui_start` calls that set a capture field start right away; calls that set none wait for the answer and use it. On 2026-07-28 the form is out with the client instead, so a call that sets none starts without capture rather than showing a second form.
+- **The defaults are to keep both files.** They apply when the person declines or closes the form, doesn't answer in time, or the client can't show forms; in the last two cases (and when the form is closed) the first reply ends with a hint for the agent to offer the other options. It shows up once. On 2026-07-28, a call that comes back with the form's `requestState` but no answer counts as closing the form.
+- The person is asked **once per server**. Their answer, or the defaults, applies to every later session from its start: the first session records to the chosen file, later ones to the next free name beside it (`app.cast`, `app-2.cast`, …). The live page of a session id is opened once; restarting the id switches the open page to the new session.
+- What the agent passes always wins, field by field. A call that sets any of the three fields is captured exactly as asked and never involves the person.
+- Sessions that end before the person decided keep the default files: one replaced by a new `tui_start` under the same id, one ending while another session's form is out (2026-07-28), and all of them if the server exits first.
 
-The reply says what happened, e.g. `…, watch live at http://127.0.0.1:52817/s/htop?t=3f9c… (opened in the person's browser)`.
+The `tui_end` reply says where the files went, e.g. `Terminated session 'default' … Recording saved to '/work/htop.cast'. Report '/work/htop.report.jsonl': 3 checks, 3 passed, 0 failed`.
 
 ### `tui_input`
 
