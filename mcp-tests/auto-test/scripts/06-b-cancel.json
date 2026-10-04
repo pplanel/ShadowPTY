@@ -2,7 +2,7 @@
   "description": "Plan 06 B (2026-07-28): closing the form keeps both default files; the agent gets the hint exactly once afterwards.",
   "server": {
     "command": [
-      "${REPO}/target/release/shadowpty"
+      "${SHADOWPTY}"
     ],
     "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-b",
     "env": {

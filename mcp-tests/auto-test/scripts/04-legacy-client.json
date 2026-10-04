@@ -2,7 +2,7 @@
   "description": "Plan 04: a client on the legacy initialize handshake is logged once, with what it declares.",
   "server": {
     "command": [
-      "${REPO}/target/release/shadowpty"
+      "${SHADOWPTY}"
     ],
     "cwd": "${REPO}/mcp-tests/auto-test/script-out/04-legacy-client",
     "env": {

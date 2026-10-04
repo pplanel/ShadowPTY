@@ -2,7 +2,7 @@
   "description": "Plan 06 A (2026-07-28): tui_start doesn't ask; tui_end's form moves the recording and deletes the report; later sessions use the answer without asking.",
   "server": {
     "command": [
-      "${REPO}/target/release/shadowpty"
+      "${SHADOWPTY}"
     ],
     "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-a",
     "env": {

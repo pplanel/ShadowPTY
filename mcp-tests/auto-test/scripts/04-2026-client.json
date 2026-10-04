@@ -2,7 +2,7 @@
   "description": "Plan 04: a client on protocol 2026-07-28 (as Claude Code) is logged once, from server/discover or the first tui_start.",
   "server": {
     "command": [
-      "${REPO}/target/release/shadowpty"
+      "${SHADOWPTY}"
     ],
     "cwd": "${REPO}/mcp-tests/auto-test/script-out/04-2026-client",
     "env": {

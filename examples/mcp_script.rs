@@ -12,14 +12,15 @@
 //!
 //! # Script
 //!
-//! A JSON file. Before it's read, `${REPO}` becomes the repository root and `${DIR}` the
-//! script's own directory.
+//! A JSON file. Before it's read, `${REPO}` becomes the repository root, `${DIR}` the script's
+//! own directory, and `${SHADOWPTY}` the server binary under test: `$SHADOWPTY_BIN` if set,
+//! otherwise `${REPO}/target/release/shadowpty` (CI sets it to the debug build).
 //!
 //! ```json
 //! {
 //!   "description": "What this script checks",
 //!   "server": {
-//!     "command": ["${REPO}/target/release/shadowpty"],
+//!     "command": ["${SHADOWPTY}"],
 //!     "cwd": "${DIR}/../script-out/example",
 //!     "env": {"RUST_LOG": "info"},
 //!     "stderr_log": "${DIR}/../script-out/example/server-stderr.log"
@@ -31,7 +32,7 @@
 //! }
 //! ```
 //!
-//! - `server`: what to spawn (default: the release build of this repository), in which working
+//! - `server`: what to spawn (default: `${SHADOWPTY}`), in which working
 //!   directory (created if missing; default files of the capture form land there), with which
 //!   environment, and where its stderr goes (appended; discarded if unset).
 //! - `client`: the identity and capabilities the client declares. `protocol` is `"2026-07-28"`
@@ -124,7 +125,15 @@ impl Default for Server {
 }
 
 fn default_command() -> Vec<String> {
-    vec![format!("{REPO}/target/release/shadowpty")]
+    vec![server_binary()]
+}
+
+/// The server binary under test: `$SHADOWPTY_BIN`, or the release build of this repository.
+fn server_binary() -> String {
+    std::env::var("SHADOWPTY_BIN")
+        .ok()
+        .filter(|bin| !bin.is_empty())
+        .unwrap_or_else(|| format!("{REPO}/target/release/shadowpty"))
 }
 
 #[derive(Deserialize)]
@@ -732,7 +741,7 @@ fn remove_path(path: &str) -> Result<()> {
     }
 }
 
-/// Reads the script, with `${REPO}` and `${DIR}` replaced.
+/// Reads the script, with `${REPO}`, `${DIR}` and `${SHADOWPTY}` replaced.
 fn load(path: &Path) -> Result<Script> {
     let path = path
         .canonicalize()
@@ -741,7 +750,8 @@ fn load(path: &Path) -> Result<Script> {
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("can't read {}", path.display()))?
         .replace("${REPO}", REPO)
-        .replace("${DIR}", &dir.to_string_lossy());
+        .replace("${DIR}", &dir.to_string_lossy())
+        .replace("${SHADOWPTY}", &server_binary());
     serde_json::from_str(&text).with_context(|| format!("{} isn't a valid script", path.display()))
 }
 

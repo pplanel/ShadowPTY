@@ -2,7 +2,7 @@
   "description": "Plan 06 (2026-07-28): tui_end returns the form once; another session ending meanwhile keeps its defaults without a second form; a retry with the request state but no answer counts as closed.",
   "server": {
     "command": [
-      "${REPO}/target/release/shadowpty"
+      "${SHADOWPTY}"
     ],
     "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-e",
     "env": {

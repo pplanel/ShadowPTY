@@ -2,7 +2,7 @@
   "description": "Plan 06 E (legacy initialize): the form goes out in the background as the session starts; tui_start doesn't wait for it; tui_end waits for the answer and applies it.",
   "server": {
     "command": [
-      "${REPO}/target/release/shadowpty"
+      "${SHADOWPTY}"
     ],
     "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-f",
     "env": {

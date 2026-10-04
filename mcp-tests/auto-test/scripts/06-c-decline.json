@@ -2,7 +2,7 @@
   "description": "Plan 06 C (2026-07-28): declining the form keeps both default files, with no hint afterwards.",
   "server": {
     "command": [
-      "${REPO}/target/release/shadowpty"
+      "${SHADOWPTY}"
     ],
     "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-c",
     "env": {

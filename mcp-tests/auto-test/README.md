@@ -94,7 +94,9 @@ cargo build --release && cargo build --release --example mcp_script
 target/release/examples/mcp_script mcp-tests/auto-test/scripts/06-a-accept-other-files.json
 ```
 
-In a plan, run it as the command of a ShadowPTY session (recording and report saved here, `live: false`), wait with `tui_wait_exit`, and check the exit code and the summary line. The script format is documented at the top of `examples/mcp_script.rs`; `${REPO}` and `${DIR}` (the script's directory) are replaced before it's read.
+In a plan, run it as the command of a ShadowPTY session (recording and report saved here, `live: false`), wait with `tui_wait_exit`, and check the exit code and the summary line. The script format is documented at the top of `examples/mcp_script.rs`; `${REPO}`, `${DIR}` (the script's directory) and `${SHADOWPTY}` (the server under test: `$SHADOWPTY_BIN`, or the release build) are replaced before it's read.
+
+CI runs every script on macOS and Linux after the tests (step **Run MCP Scripts**), against the debug build: `SHADOWPTY_BIN=target/debug/shadowpty target/debug/examples/mcp_script <script>`.
 
 The trade-off: the scripts are deterministic, fast and cost no model calls, so they make good regression checks, but they test the server against **rmcp's client**, not the real Claude Code. What Claude Code itself shows (its `/mcp` screens, how it renders the form, which capabilities a new version declares) still needs the Claude Code steps of each plan.
 
