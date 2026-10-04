@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::{
+    ServerHandler,
     handler::server::{tool::InputResponses, wrapper::Parameters},
     model::{CallToolResponse, CallToolResult, InputRequiredResult, ProtocolVersion},
     schemars::{self, JsonSchema},
     service::RequestContext,
-    tool, tool_router, {Peer, RoleServer},
+    tool, tool_handler, tool_router, {Peer, RoleServer},
 };
 use serde::{Deserialize, Serialize};
 
@@ -168,7 +169,7 @@ pub struct TuiStartParams {
     pub session_id: Option<String>,
     /// If true, the session can be watched live in a browser: the reply includes a link to a
     /// local, view-only page showing the screen and a timeline of inputs and checks
-    /// (default false). The link contains a secret token; hand it to the person, don't open it.
+    /// (default false). The link contains a secret token and is meant for the person.
     pub live: Option<bool>,
 }
 
@@ -530,11 +531,19 @@ fn command_line(command: &str, args: &[String]) -> String {
         .join(" ")
 }
 
-#[tool_router(server_handler)]
+#[tool_router]
 impl ShadowPtyServer {
     /// Spawns a new process in a native pseudo-terminal (PTY) and initializes the screen buffer.
     #[tool(
         name = "tui_start",
+        title = "Start TUI session",
+        annotations(
+            title = "Start TUI session",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        ),
         description = "Spawns a command in a native pseudo-terminal (PTY) and initializes screen tracking. Optionally records to an asciicast v3 file (record_path) and writes a JSON Lines report of every check and its result (report_path). Use session_id to run several sessions at once. With live: true, the reply includes a local link where a person can watch the session live in a browser (view-only); give them the link, don't open it. When record_path, report_path and live are all left unset, ShadowPTY asks the person once (through the client) how they want sessions captured and applies their answer to later sessions too."
     )]
     pub async fn tui_start(
@@ -562,6 +571,14 @@ impl ShadowPtyServer {
     /// Sends raw keystrokes or symbolic tokens (<ENTER>, <UP>, <CTRL+C>, etc.) to the PTY.
     #[tool(
         name = "tui_input",
+        title = "Send keys",
+        annotations(
+            title = "Send keys",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        ),
         description = "Sends keystrokes to the running TUI application. Supports tokens like <ENTER>, <ESC>, <UP>, <DOWN>, <CTRL+C>, etc."
     )]
     pub async fn tui_input(
@@ -592,6 +609,14 @@ impl ShadowPtyServer {
     /// Sends text as a single bracketed paste.
     #[tool(
         name = "tui_paste",
+        title = "Paste text",
+        annotations(
+            title = "Paste text",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        ),
         description = "Pastes text (e.g. a multiline script) using bracketed paste mode, so shells and editors receive it as one paste instead of typed keys."
     )]
     pub async fn tui_paste(
@@ -614,6 +639,12 @@ impl ShadowPtyServer {
     /// Waits for a literal or regex pattern in new output or on screen.
     #[tool(
         name = "tui_expect",
+        title = "Wait for text",
+        annotations(
+            title = "Wait for text",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Waits until a literal or regex pattern appears, instead of sleeping and polling tui_read. With `patterns`, waits for whichever appears first and says which one matched. By default it searches output that neither tui_read nor an earlier tui_expect has returned yet; with screen_mode it searches the rendered screen text. Fails early if the process exits."
     )]
     pub async fn tui_expect(
@@ -654,6 +685,12 @@ impl ShadowPtyServer {
     /// Waits until text disappears from the screen.
     #[tool(
         name = "tui_wait_gone",
+        title = "Wait for text to disappear",
+        annotations(
+            title = "Wait for text to disappear",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Waits until a literal or regex pattern is no longer on the rendered screen, e.g. a spinner or \"Loading...\" message, and reports how long that took. With `patterns`, waits until none of them is on screen. Returns at once if the text isn't showing, so if it may not have appeared yet, wait for it first with tui_expect (screen_mode). Fails early if the process exits with it still on screen."
     )]
     pub async fn tui_wait_gone(
@@ -695,6 +732,12 @@ impl ShadowPtyServer {
     /// Waits for the process to exit and reports its exit code or signal.
     #[tool(
         name = "tui_wait_exit",
+        title = "Wait for exit",
+        annotations(
+            title = "Wait for exit",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Waits until the session's process exits and reports how it ended (exit code or signal), plus any output not yet returned by tui_read or tui_expect. Returns immediately if it has already exited. The session stays open for tui_read and screenshots until tui_end."
     )]
     pub async fn tui_wait_exit(
@@ -722,6 +765,12 @@ impl ShadowPtyServer {
     /// Waits until the application stops producing output.
     #[tool(
         name = "tui_wait_stable",
+        title = "Wait for quiet screen",
+        annotations(
+            title = "Wait for quiet screen",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Waits until the application has produced no output for quiet_period_ms, so the next tui_read sees a finished screen. Returns immediately if the process has exited."
     )]
     pub async fn tui_wait_stable(
@@ -747,6 +796,14 @@ impl ShadowPtyServer {
     /// Runs shell commands in order, waiting for the prompt after each.
     #[tool(
         name = "tui_run_script",
+        title = "Run shell commands",
+        annotations(
+            title = "Run shell commands",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        ),
         description = "Runs shell commands one at a time in a shell session, waiting for the prompt after each, and returns each command's output. Output from before the call is ignored, and the echo of each command is skipped. Stops at the first command whose prompt doesn't appear within timeout_ms."
     )]
     pub async fn tui_run_script(
@@ -808,6 +865,14 @@ impl ShadowPtyServer {
     /// Sends a signal to the session's process without ending the session.
     #[tool(
         name = "tui_signal",
+        title = "Send signal",
+        annotations(
+            title = "Send signal",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
         description = "Sends a signal (INT, TERM, HUP, TSTP, STOP, CONT, USR1, KILL, ...) to the running app without ending the session, e.g. to test that it shuts down cleanly on TERM or reloads on HUP. By default it goes to the terminal's foreground process group, like Ctrl+C would; target \"process\" signals only the process tui_start launched. Unlike <CTRL+C> in tui_input, it works even when the app has turned off keyboard signals (raw mode). Follow up with tui_expect or tui_wait_exit to check the effect."
     )]
     pub async fn tui_signal(
@@ -848,6 +913,14 @@ impl ShadowPtyServer {
     /// Resizes the pseudo-terminal window and updates screen parser dimensions.
     #[tool(
         name = "tui_resize",
+        title = "Resize terminal",
+        annotations(
+            title = "Resize terminal",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
         description = "Resizes the pseudo-terminal window and screen grid to test TUI responsive layout."
     )]
     pub async fn tui_resize(
@@ -876,6 +949,8 @@ impl ShadowPtyServer {
     /// Reads the current TUI screen state, preserving layout, colors, and text attributes.
     #[tool(
         name = "tui_read",
+        title = "Read screen",
+        annotations(title = "Read screen", read_only_hint = true, open_world_hint = false),
         description = "Reads the current screen state formatted with semantic tags (<fg:...>, <bg:...>, <bold>, etc.). Output shown on this screen counts as seen: a later tui_expect only matches newer output."
     )]
     pub async fn tui_read(
@@ -896,6 +971,12 @@ impl ShadowPtyServer {
     /// Lists all currently active pseudo-terminal sessions.
     #[tool(
         name = "tui_list_sessions",
+        title = "List sessions",
+        annotations(
+            title = "List sessions",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Lists all active PTY sessions with their process id, dimensions, recording state, and exit_status (null while running, otherwise {\"exit_code\": N}, {\"signal\": N} or \"unknown\")."
     )]
     pub async fn tui_list_sessions(
@@ -916,6 +997,14 @@ impl ShadowPtyServer {
     /// Terminates a pseudo-terminal session, killing the child process and releasing resources.
     #[tool(
         name = "tui_end",
+        title = "End session",
+        annotations(
+            title = "End session",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
         description = "Terminates a pseudo-terminal session, killing the running program and releasing resources. If the session writes a report, finishes it and says how many checks passed and failed."
     )]
     pub async fn tui_end(
@@ -952,6 +1041,14 @@ impl ShadowPtyServer {
     /// Takes a screenshot of the current screen state in PNG (or SVG) format.
     #[tool(
         name = "tui_take_screenshot",
+        title = "Take screenshot",
+        annotations(
+            title = "Take screenshot",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
         description = "Takes a screenshot of the current terminal screen. Format can be 'png' (default) or 'svg'. If output_path is specified (must be absolute), writes the file to disk; otherwise returns the content directly (base64 PNG image or SVG text)."
     )]
     pub async fn tui_take_screenshot(
@@ -1070,5 +1167,73 @@ impl ShadowPtyServer {
                 Ok(text_result(svg))
             }
         }
+    }
+}
+
+#[tool_handler(
+    name = "shadowpty",
+    instructions = "ShadowPTY runs terminal (TUI) programs headlessly so you can drive and check them. \
+A session starts with tui_start and stays open until tui_end; several can run at once under different session_id values. \
+Send keys with tui_input (tokens like <ENTER>, <UP>, <CTRL+C>) or text with tui_paste. \
+Never sleep: wait with tui_expect (text appears), tui_wait_gone (text disappears), tui_wait_stable (output goes quiet) or tui_wait_exit (process ends). \
+Look at the screen with tui_read (text with color and style tags) or tui_take_screenshot. \
+For shell sessions, tui_run_script runs commands one at a time and returns each one's output. \
+Recordings, reports and the live viewer link are for the person: pass their paths and links on to them. \
+End every session you start with tui_end."
+)]
+impl ServerHandler for ShadowPtyServer {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_tool_declares_title_and_hints() {
+        let tools = ShadowPtyServer::tool_router().list_all();
+        assert_eq!(tools.len(), 14);
+        for tool in tools {
+            let name = &tool.name;
+            assert!(
+                tool.title.as_deref().is_some_and(|t| !t.is_empty()),
+                "{name}: title"
+            );
+            let a = tool.annotations.clone().unwrap_or_default();
+            assert!(
+                a.title.as_deref().is_some_and(|t| !t.is_empty()),
+                "{name}: annotations.title"
+            );
+            assert!(a.open_world_hint.is_some(), "{name}: openWorldHint");
+            assert!(a.read_only_hint.is_some(), "{name}: readOnlyHint");
+            if a.read_only_hint == Some(false) {
+                assert!(a.destructive_hint.is_some(), "{name}: destructiveHint");
+                assert!(a.idempotent_hint.is_some(), "{name}: idempotentHint");
+            }
+        }
+    }
+
+    #[test]
+    fn mcpb_manifest_lists_every_tool() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../mcpb/manifest.json")).unwrap_or_default();
+        let mut listed: Vec<&str> = manifest["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        let tools = ShadowPtyServer::tool_router().list_all();
+        let mut served: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        listed.sort_unstable();
+        served.sort_unstable();
+        assert_eq!(listed, served);
+    }
+
+    #[test]
+    fn server_info_carries_instructions() {
+        let server = ShadowPtyServer::new(PtyManager::new());
+        let info = server.get_info();
+        assert_eq!(info.server_info.name, "shadowpty");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+        assert!(info.instructions.is_some_and(|i| i.contains("tui_start")));
     }
 }

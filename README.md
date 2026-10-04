@@ -112,7 +112,9 @@ Nothing to install — it runs through `npx` (requires Node.js):
 claude mcp add shadow-pty -- npx -y @azimovlabs/mcp-shadow-pty
 ```
 
-**Claude Desktop, Gemini CLI / Antigravity, Cursor and other MCP clients** — add this to the client's MCP config (`claude_desktop_config.json`, `~/.gemini/config/mcp_config.json`, Cursor's MCP settings, …):
+**Claude Desktop** — download [`shadowpty.mcpb`](https://github.com/pplanel/ShadowPTY/releases/latest/download/shadowpty.mcpb) and double-click it (or drag it onto Claude Desktop). No Node.js needed. macOS on Apple Silicon and Linux.
+
+**Gemini CLI / Antigravity, Cursor and other MCP clients** — add this to the client's MCP config (`claude_desktop_config.json`, `~/.gemini/config/mcp_config.json`, Cursor's MCP settings, …):
 
 ```json
 {

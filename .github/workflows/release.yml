@@ -70,9 +70,39 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  mcpb:
+    name: Pack MCPB bundle
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Download binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: artifacts-*
+          path: binaries
+          merge-multiple: true
+
+      - name: Pack bundle
+        run: scripts/pack-mcpb.sh binaries "${GITHUB_REF_NAME#v}"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mcpb
+          path: dist/shadowpty.mcpb
+          if-no-files-found: error
+
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [build, mcpb]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

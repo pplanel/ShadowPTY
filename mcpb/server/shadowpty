@@ -1,0 +1,27 @@
+#!/bin/sh
+# MCPB entry point: runs the ShadowPTY binary built for this machine.
+# stdout is the MCP channel, so every message here goes to stderr.
+
+dir=$(dirname "$0")
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) target=aarch64-apple-darwin ;;
+  Linux-x86_64) target=x86_64-unknown-linux-gnu ;;
+  Linux-aarch64 | Linux-arm64) target=aarch64-unknown-linux-gnu ;;
+  *)
+    echo "[ShadowPTY] No binary for $(uname -s) $(uname -m) in this bundle." >&2
+    exit 1
+    ;;
+esac
+
+# The host may start us in `/`, where the capture form's default files can't be written.
+# An unset user_config value can arrive unsubstituted, as `${user_config.workdir}`.
+workdir=$SHADOWPTY_WORKDIR
+case "$workdir" in
+  '' | '${'*) [ "$(pwd)" = / ] && workdir=$HOME ;;
+esac
+if [ -n "$workdir" ]; then
+  cd "$workdir" || echo "[ShadowPTY] Can't enter $workdir; staying in $(pwd)" >&2
+fi
+
+exec "$dir/bin/shadowpty-$target" "$@"

@@ -37,6 +37,17 @@ ShadowPTY exposes 14 tools. Every tool except `tui_list_sessions` takes an optio
 
 All waits are capped at 120 seconds.
 
+The server sends short usage instructions at initialization, and every tool declares a `title` and annotations so clients can decide what to auto-approve:
+
+| Annotation | Tools |
+| :--- | :--- |
+| `readOnlyHint` | `tui_read`, `tui_expect`, `tui_wait_stable`, `tui_wait_gone`, `tui_wait_exit`, `tui_list_sessions` |
+| `destructiveHint` | `tui_start` (replaces a session with the same id), `tui_input`, `tui_paste`, `tui_run_script`, `tui_signal`, `tui_end`, `tui_take_screenshot` (may overwrite `output_path`) |
+| `idempotentHint` | `tui_resize`, `tui_end`, `tui_take_screenshot` |
+| `openWorldHint` | `tui_start`, `tui_input`, `tui_paste`, `tui_run_script` (they run or drive arbitrary programs) |
+
+`tui_resize` is the only non-read-only tool that is not destructive.
+
 ### `tui_start`
 
 Spawns `command` in a new pseudo-terminal. Starting a `session_id` that is already running stops the old session first (killed and reaped); other sessions are untouched.
@@ -461,7 +472,11 @@ cargo bench                      # criterion: emulator, render, output, pty
 nix flake check
 ```
 
-CI runs the first three on macOS and Linux. Tests spawn real processes; screens in tests default to 43×155. Contributor and agent guidelines are in [`CLAUDE.md`](../CLAUDE.md) / [`GEMINI.md`](../GEMINI.md); open work is in [`TODO.md`](../TODO.md).
+CI runs the first three on macOS and Linux.
+
+Releases ship the binaries, the npm launcher and an MCPB bundle for Claude Desktop. `scripts/pack-mcpb.sh <dir> <version>` builds `dist/shadowpty.mcpb` from the `shadowpty-<target>` binaries in `<dir>` (missing targets are left out, so a local build of one platform works). The bundle is `mcpb/manifest.json` plus `mcpb/server/shadowpty`, a `sh` launcher that picks the binary for the machine and starts it in the configured working directory (or `$HOME` when the host starts it in `/`). A test keeps the manifest's tool list in sync with the server.
+
+Tests spawn real processes; screens in tests default to 43×155. Contributor and agent guidelines are in [`CLAUDE.md`](../CLAUDE.md) / [`GEMINI.md`](../GEMINI.md); open work is in [`TODO.md`](../TODO.md).
 
 ---
 
