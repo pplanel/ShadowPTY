@@ -1,0 +1,17 @@
+{
+  "name": "shadowpty",
+  "description": "ShadowPTY: headless TUI testing for coding agents.",
+  "owner": {
+    "name": "Pedro Gabriel",
+    "email": "pplanel@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "shadowpty",
+      "source": ".",
+      "description": "The ShadowPTY MCP server plus a skill that teaches Claude to start, drive, wait on, read and screenshot terminal apps.",
+      "category": "testing",
+      "tags": ["tui", "terminal", "testing", "mcp"]
+    }
+  ]
+}

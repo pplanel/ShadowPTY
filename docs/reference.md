@@ -476,6 +476,8 @@ CI runs the first three on macOS and Linux.
 
 Releases ship the binaries, the npm launcher and an MCPB bundle for Claude Desktop. `scripts/pack-mcpb.sh <dir> <version>` builds `dist/shadowpty.mcpb` from the `shadowpty-<target>` binaries in `<dir>` (missing targets are left out, so a local build of one platform works). The bundle is `mcpb/manifest.json` plus `mcpb/server/shadowpty`, a `sh` launcher that picks the binary for the machine and starts it in the configured working directory (or `$HOME` when the host starts it in `/`). A test keeps the manifest's tool list in sync with the server.
 
+The repository is also a Claude Code plugin marketplace: `.claude-plugin/marketplace.json` lists one plugin rooted at the repository, whose `.claude-plugin/plugin.json` declares the npx server and picks up the skill in `skills/shadowpty/` (the same directory `npx skills add` installs from). The skill repeats the server instructions in more depth; when a tool's behavior changes, update both. Check with `claude plugin validate .`.
+
 Tests spawn real processes; screens in tests default to 43×155. Contributor and agent guidelines are in [`CLAUDE.md`](../CLAUDE.md) / [`GEMINI.md`](../GEMINI.md); open work is in [`TODO.md`](../TODO.md).
 
 ---

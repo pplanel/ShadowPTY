@@ -1,0 +1,20 @@
+{
+  "name": "shadowpty",
+  "displayName": "ShadowPTY",
+  "description": "Run and test terminal (TUI) apps headlessly: the ShadowPTY MCP server plus a skill on driving it well.",
+  "author": {
+    "name": "Pedro Gabriel",
+    "email": "pplanel@gmail.com",
+    "url": "https://github.com/pplanel"
+  },
+  "homepage": "https://github.com/pplanel/ShadowPTY#readme",
+  "repository": "https://github.com/pplanel/ShadowPTY",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["tui", "terminal", "pty", "testing", "screenshot", "asciicast", "mcp"],
+  "mcpServers": {
+    "shadowpty": {
+      "command": "npx",
+      "args": ["-y", "@azimovlabs/mcp-shadow-pty"]
+    }
+  }
+}

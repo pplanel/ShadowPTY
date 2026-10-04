@@ -106,11 +106,14 @@ Works on **macOS and Linux**.
 
 Nothing to install — it runs through `npx` (requires Node.js):
 
-**Claude Code**
+**Claude Code**: install the plugin, which adds the server and a skill that teaches Claude how to use it:
 
 ```bash
-claude mcp add shadow-pty -- npx -y @azimovlabs/mcp-shadow-pty
+claude plugin marketplace add pplanel/ShadowPTY
+claude plugin install shadowpty@shadowpty
 ```
+
+Or add only the server: `claude mcp add shadow-pty -- npx -y @azimovlabs/mcp-shadow-pty`.
 
 **Claude Desktop** — download [`shadowpty.mcpb`](https://github.com/pplanel/ShadowPTY/releases/latest/download/shadowpty.mcpb) and double-click it (or drag it onto Claude Desktop). No Node.js needed. macOS on Apple Silicon and Linux.
 
@@ -126,6 +129,8 @@ claude mcp add shadow-pty -- npx -y @azimovlabs/mcp-shadow-pty
   }
 }
 ```
+
+**The skill on its own** (for other agents, or with a server you added yourself): `npx skills add pplanel/ShadowPTY`. It lives in [`skills/shadowpty/`](skills/shadowpty/SKILL.md).
 
 Prefer Nix or building from source? See the [technical reference](docs/reference.md#development).
 
