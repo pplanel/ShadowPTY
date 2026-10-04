@@ -90,7 +90,8 @@ The default paths are in the server's working directory and never name an existi
 - The person is asked **once per server**. Their answer applies to every later session: the first session records to the chosen file, later ones to the next free name beside it (`app.cast`, `app-2.cast`, …). The live page of a session id is opened once; restarting the id switches the open page to the new session.
 - What the agent passes always wins, field by field. A call that sets any of the three fields doesn't trigger the form.
 - Declining the form means capture nothing.
-- If the client can't show forms, or the person closes the form (or doesn't answer within 10 minutes), the session starts without capture and the first reply ends with a hint for the agent to offer these options. It shows up once.
+- If the client can't show forms, or the person closes the form (or doesn't answer within 10 minutes), the session starts without capture and the first reply ends with a hint for the agent to offer these options. It shows up once. On 2026-07-28, a call that comes back with the form's `requestState` but no answer counts as closing the form.
+- While the person answers, other `tui_start` calls that set a capture field start right away; calls that set none wait for the answer and use it. On 2026-07-28 the form is out with the client instead, so a call that sets none starts without capture rather than showing a second form.
 
 The reply says what happened, e.g. `…, watch live at http://127.0.0.1:52817/s/htop?t=3f9c… (opened in the person's browser)`.
 

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use rmcp::{
     ServerHandler,
-    handler::server::{tool::InputResponses, wrapper::Parameters},
+    handler::server::{common::FromContextPart, tool::ToolCallContext, wrapper::Parameters},
     model::{CallToolResponse, CallToolResult, InputRequiredResult, ProtocolVersion},
     schemars::{self, JsonSchema},
     service::RequestContext,
@@ -353,9 +353,12 @@ pub struct ShadowPtyServer {
     manager: PtyManager,
     /// The live viewer's HTTP server, started on the first `tui_start` with `live: true`.
     live: Arc<tokio::sync::OnceCell<LiveServer>>,
-    /// How the person wants sessions captured. Held while the person answers the form, so
-    /// concurrent starts wait for the one answer instead of asking twice.
+    /// How the person wants sessions captured. Only held briefly, never while the person
+    /// answers.
     capture: Arc<tokio::sync::Mutex<Capture>>,
+    /// Held by the start that asks the person, so other starts that need the answer wait for
+    /// it instead of asking twice. Starts that don't need the answer never take it.
+    asking: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ShadowPtyServer {
@@ -365,6 +368,7 @@ impl ShadowPtyServer {
             manager,
             live: Arc::new(tokio::sync::OnceCell::new()),
             capture: Arc::new(tokio::sync::Mutex::new(Capture::default())),
+            asking: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -417,31 +421,53 @@ impl ShadowPtyServer {
             report_path: params.report_path.as_deref(),
             live: params.live,
         };
+        // Only a start that may need the answer waits for whoever is asking the person
+        let needs_answer = self.capture.lock().await.should_ask(&requested);
+        let asking_turn = if needs_answer {
+            Some(self.asking.lock().await)
+        } else {
+            None
+        };
         let mut capture = self.capture.lock().await;
-        if capture.should_ask(&requested) {
-            let answer = match asking {
-                Asking::No => capture::Answer::Unsupported,
-                Asking::During(peer) => capture::ask(peer, &params.command).await,
-                Asking::Retry(responses) => {
-                    match responses.and_then(|r| r.get(capture::INPUT_KEY)) {
-                        Some(response) => capture::read_response(response, &params.command),
-                        None => match capture::input_request(&params.command) {
-                            Ok(form) => {
-                                drop(capture);
-                                return Err(form);
-                            }
-                            Err(e) => {
-                                tracing::warn!("Can't build the capture form: {e}");
-                                capture::Answer::Unsupported
-                            }
-                        },
-                    }
+        let answer = if capture.should_ask(&requested) {
+            match asking {
+                Asking::No => Some(capture::Answer::Unsupported),
+                Asking::During(peer) => {
+                    // Starts that don't need the answer go ahead while the person answers
+                    drop(capture);
+                    let answer = capture::ask(peer, &params.command).await;
+                    capture = self.capture.lock().await;
+                    Some(answer)
                 }
-            };
+                Asking::Retry(retry) => match retry.response() {
+                    Some(response) => Some(capture::read_response(response, &params.command)),
+                    // The client came back from the form without an answer: it was closed
+                    None if retry.after_form() => Some(capture::Answer::Dismissed),
+                    // Another call's form is out; don't show a second one
+                    None if capture.form_out() => None,
+                    None => match capture::input_request(&params.command) {
+                        Ok(form) => {
+                            capture.send_form();
+                            drop(capture);
+                            drop(asking_turn);
+                            return Err(form);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Can't build the capture form: {e}");
+                            Some(capture::Answer::Unsupported)
+                        }
+                    },
+                },
+            }
+        } else {
+            None
+        };
+        if let Some(answer) = answer {
             capture.answer(answer);
         }
         let plan = capture.plan(&requested);
         drop(capture);
+        drop(asking_turn);
         Ok(plan)
     }
 
@@ -520,7 +546,35 @@ enum Asking<'a> {
     During(&'a Peer<RoleServer>),
     /// Return the form as an input request; the client calls again with the answer, if any
     /// (2026-07-28 and later, where a server can't send requests to the client).
-    Retry(Option<&'a rmcp::model::InputResponses>),
+    Retry(&'a Retry),
+}
+
+/// What a client sends when it calls `tui_start` again after the capture form (protocol
+/// 2026-07-28): the person's answer, and the request state returned with the form.
+pub struct Retry {
+    responses: Option<rmcp::model::InputResponses>,
+    state: Option<String>,
+}
+
+impl Retry {
+    /// The answer to the capture form, if the client sent one.
+    fn response(&self) -> Option<&serde_json::Value> {
+        self.responses.as_ref()?.get(capture::INPUT_KEY)
+    }
+
+    /// Whether this call follows the capture form.
+    fn after_form(&self) -> bool {
+        self.state.as_deref() == Some(capture::FORM_STATE)
+    }
+}
+
+impl<S> FromContextPart<ToolCallContext<'_, S>> for Retry {
+    fn from_context_part(context: &mut ToolCallContext<'_, S>) -> Result<Self, rmcp::ErrorData> {
+        Ok(Self {
+            responses: context.input_responses.take(),
+            state: context.request_state.take(),
+        })
+    }
 }
 
 /// The command line as shown to the person watching.
@@ -550,7 +604,7 @@ impl ShadowPtyServer {
         &self,
         Parameters(params): Parameters<TuiStartParams>,
         context: RequestContext<RoleServer>,
-        InputResponses(responses): InputResponses,
+        retry: Retry,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let asking = if !capture::supports_forms(context.client_capabilities().as_ref()) {
             Asking::No
@@ -558,7 +612,7 @@ impl ShadowPtyServer {
             .protocol_version()
             .is_some_and(|v| v.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
         {
-            Asking::Retry(responses.as_ref())
+            Asking::Retry(&retry)
         } else {
             Asking::During(&context.peer)
         };

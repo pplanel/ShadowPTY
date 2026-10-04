@@ -111,6 +111,9 @@ pub struct Capture {
     /// Sessions whose live page was opened in the browser. Restarting one switches the open
     /// page to the new session, so it isn't opened again.
     opened: HashSet<String>,
+    /// The form went to the client as an input request (protocol 2026-07-28) and no answer
+    /// came back yet. Other starts don't send it again while it's out.
+    form_out: bool,
 }
 
 impl Capture {
@@ -122,6 +125,7 @@ impl Capture {
 
     /// Remembers how asking went.
     pub fn answer(&mut self, answer: Answer) {
+        self.form_out = false;
         self.state = match answer {
             Answer::Chose(choices) => State::Answered {
                 record: choices.record.map(Slot::new),
@@ -173,6 +177,17 @@ impl Capture {
         plan
     }
 
+    /// Whether the form is out with the client, waiting for it to call `tui_start` again.
+    #[must_use]
+    pub const fn form_out(&self) -> bool {
+        self.form_out
+    }
+
+    /// The form was handed to the client as an input request.
+    pub const fn send_form(&mut self) {
+        self.form_out = true;
+    }
+
     /// Whether to open the live page of `session_id` now (the first time only).
     pub fn first_open(&mut self, session_id: &str) -> bool {
         self.opened.insert(session_id.to_string())
@@ -181,6 +196,10 @@ impl Capture {
 
 /// The key of the form in a `tui_start` input request (protocol 2026-07-28 and later).
 pub const INPUT_KEY: &str = "shadowpty_capture";
+
+/// The request state returned with the form. A client that calls `tui_start` again with it but
+/// without an answer under [`INPUT_KEY`] closed the form.
+pub const FORM_STATE: &str = "shadowpty_capture_form";
 
 /// Whether the client can show forms, from the capabilities it sent with the request.
 #[must_use]
@@ -209,8 +228,9 @@ pub fn form(command: &str) -> Result<ElicitRequestParams, &'static str> {
 /// `tui_start` again with the answer under [`INPUT_KEY`].
 pub fn input_request(command: &str) -> Result<InputRequiredResult, &'static str> {
     let request = InputRequest::Elicitation(ElicitRequest::new(form(command)?));
-    Ok(InputRequiredResult::from_input_requests(
-        [(INPUT_KEY.to_string(), request)].into(),
+    Ok(InputRequiredResult::new(
+        Some([(INPUT_KEY.to_string(), request)].into()),
+        Some(FORM_STATE.to_string()),
     ))
 }
 
