@@ -54,7 +54,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["async_tokio"] }
-rmcp = { version = "3.4.0", features = ["client", "elicitation", "transport-io"] }
+rmcp = { version = "3.4.0", features = ["client", "elicitation", "transport-child-process", "transport-io"] }
 
 [[bench]]
 name = "shadowpty"

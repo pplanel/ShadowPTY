@@ -1,0 +1,86 @@
+{
+  "description": "Plan 06 C (2026-07-28): declining the form keeps both default files, with no hint afterwards.",
+  "server": {
+    "command": [
+      "${REPO}/target/release/shadowpty"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-c",
+    "env": {
+      "RUST_LOG": "info"
+    }
+  },
+  "client": {
+    "protocol": "2026-07-28"
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/06-c"
+  ],
+  "answers": [
+    "decline"
+  ],
+  "steps": [
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s1"
+      }
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s1"
+      },
+      "label": "decline the form",
+      "expect": [
+        "Recording saved to '${REPO}/mcp-tests/auto-test/script-out/06-c/sh.cast'",
+        "Report '${REPO}/mcp-tests/auto-test/script-out/06-c/sh.report.jsonl'"
+      ],
+      "expect_form": {
+        "shown": true
+      }
+    },
+    {
+      "files": {
+        "${REPO}/mcp-tests/auto-test/script-out/06-c/sh.cast": true,
+        "${REPO}/mcp-tests/auto-test/script-out/06-c/sh.report.jsonl": true
+      }
+    },
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s2"
+      },
+      "label": "defaults, no hint",
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-c/sh-2.cast'"
+      ],
+      "expect_not": [
+        "Ask the person whether they want"
+      ]
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s2"
+      },
+      "expect_form": {
+        "shown": false
+      }
+    },
+    {
+      "forms": {
+        "count": 1
+      }
+    }
+  ]
+}

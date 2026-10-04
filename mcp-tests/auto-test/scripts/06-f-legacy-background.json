@@ -1,0 +1,110 @@
+{
+  "description": "Plan 06 E (legacy initialize): the form goes out in the background as the session starts; tui_start doesn't wait for it; tui_end waits for the answer and applies it.",
+  "server": {
+    "command": [
+      "${REPO}/target/release/shadowpty"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-f",
+    "env": {
+      "RUST_LOG": "info"
+    }
+  },
+  "client": {
+    "protocol": "legacy"
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/06-f"
+  ],
+  "answers": [
+    {
+      "accept": {
+        "record": true,
+        "record_path": "${REPO}/mcp-tests/auto-test/script-out/06-f/kept.cast",
+        "report": false,
+        "live": false
+      },
+      "hold_ms": 1500
+    }
+  ],
+  "steps": [
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s1"
+      },
+      "label": "returns while the person is still answering",
+      "within_ms": 1000,
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-f/sh.cast'",
+        "The person is being asked"
+      ]
+    },
+    {
+      "label": "the start form, with Watch live",
+      "forms": {
+        "count": 1,
+        "fields": [
+          "record",
+          "record_path",
+          "report",
+          "report_path",
+          "live"
+        ],
+        "message": "started `sh`"
+      }
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s1"
+      },
+      "label": "waits for the answer, then applies it",
+      "expect": [
+        "Recording saved to '${REPO}/mcp-tests/auto-test/script-out/06-f/kept.cast'",
+        "Report deleted, as the person chose"
+      ]
+    },
+    {
+      "files": {
+        "${REPO}/mcp-tests/auto-test/script-out/06-f/kept.cast": true,
+        "${REPO}/mcp-tests/auto-test/script-out/06-f/sh.cast": false,
+        "${REPO}/mcp-tests/auto-test/script-out/06-f/sh.report.jsonl": false
+      }
+    },
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s2"
+      },
+      "label": "later session takes the answer",
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-f/kept-2.cast'"
+      ],
+      "expect_not": [
+        "reporting to",
+        "The person is being asked"
+      ]
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s2"
+      }
+    },
+    {
+      "forms": {
+        "count": 1
+      }
+    }
+  ]
+}

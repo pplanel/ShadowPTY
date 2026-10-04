@@ -1,0 +1,137 @@
+{
+  "description": "Plan 06 A (2026-07-28): tui_start doesn't ask; tui_end's form moves the recording and deletes the report; later sessions use the answer without asking.",
+  "server": {
+    "command": [
+      "${REPO}/target/release/shadowpty"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-a",
+    "env": {
+      "RUST_LOG": "info"
+    }
+  },
+  "client": {
+    "protocol": "2026-07-28"
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/06-a"
+  ],
+  "answers": [
+    {
+      "accept": {
+        "record": true,
+        "record_path": "${REPO}/mcp-tests/auto-test/script-out/06-a/kept.cast",
+        "report": false
+      }
+    }
+  ],
+  "steps": [
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s1"
+      },
+      "label": "start without capture fields",
+      "within_ms": 5000,
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-a/sh.cast'",
+        "reporting to '${REPO}/mcp-tests/auto-test/script-out/06-a/sh.report.jsonl'",
+        "When this session ends, tui_end asks the person"
+      ],
+      "expect_form": {
+        "shown": false
+      }
+    },
+    {
+      "label": "default files while it runs",
+      "files": {
+        "${REPO}/mcp-tests/auto-test/script-out/06-a/sh.cast": true,
+        "${REPO}/mcp-tests/auto-test/script-out/06-a/sh.report.jsonl": true
+      }
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s1"
+      },
+      "label": "the form at tui_end",
+      "expect": [
+        "Recording saved to '${REPO}/mcp-tests/auto-test/script-out/06-a/kept.cast'",
+        "Report deleted, as the person chose"
+      ],
+      "expect_form": {
+        "shown": true,
+        "fields": [
+          "record",
+          "record_path",
+          "report",
+          "report_path"
+        ],
+        "no_fields": [
+          "live"
+        ],
+        "message": "is ending `sh`"
+      }
+    },
+    {
+      "label": "moved and deleted",
+      "files": {
+        "${REPO}/mcp-tests/auto-test/script-out/06-a/kept.cast": true,
+        "${REPO}/mcp-tests/auto-test/script-out/06-a/sh.cast": false,
+        "${REPO}/mcp-tests/auto-test/script-out/06-a/sh.report.jsonl": false
+      }
+    },
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s2"
+      },
+      "label": "later session takes the answer",
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-a/kept-2.cast'"
+      ],
+      "expect_not": [
+        "reporting to",
+        "When this session ends"
+      ],
+      "expect_form": {
+        "shown": false
+      }
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s2"
+      },
+      "label": "no form, nothing to settle",
+      "expect": [
+        "Terminated session 's2'"
+      ],
+      "expect_not": [
+        "Recording saved"
+      ],
+      "expect_form": {
+        "shown": false
+      }
+    },
+    {
+      "files": {
+        "${REPO}/mcp-tests/auto-test/script-out/06-a/kept-2.cast": true
+      }
+    },
+    {
+      "forms": {
+        "count": 1
+      }
+    }
+  ]
+}

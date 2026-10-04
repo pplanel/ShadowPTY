@@ -1,0 +1,46 @@
+{
+  "description": "Plan 04: a client that declares the Tasks extension and no forms is logged as such.",
+  "server": {
+    "command": [
+      "${REPO}/target/release/shadowpty"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/04-tasks-client",
+    "env": {
+      "RUST_LOG": "info"
+    },
+    "stderr_log": "${REPO}/mcp-tests/auto-test/script-out/04-tasks-client/server-stderr.log"
+  },
+  "client": {
+    "name": "tasks-check",
+    "version": "2.0",
+    "protocol": "2026-07-28",
+    "forms": false,
+    "tasks": true
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/04-tasks-client"
+  ],
+  "steps": [
+    {
+      "label": "start a session",
+      "call": "tui_start",
+      "args": {
+        "command": "true",
+        "live": false
+      }
+    },
+    {
+      "label": "tasks yes, no elicitation",
+      "log": {
+        "contains": [
+          "Client connected: tasks-check 2.0, protocol 2026-07-28, elicitation: no, tasks (io.modelcontextprotocol/tasks): yes, extensions: io.modelcontextprotocol/tasks"
+        ]
+      }
+    },
+    {
+      "label": "end it",
+      "call": "tui_end",
+      "args": {}
+    }
+  ]
+}

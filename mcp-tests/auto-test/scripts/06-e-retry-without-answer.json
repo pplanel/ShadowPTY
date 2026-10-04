@@ -1,0 +1,88 @@
+{
+  "description": "Plan 06 (2026-07-28): tui_end returns the form once; another session ending meanwhile keeps its defaults without a second form; a retry with the request state but no answer counts as closed.",
+  "server": {
+    "command": [
+      "${REPO}/target/release/shadowpty"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-e",
+    "env": {
+      "RUST_LOG": "info"
+    }
+  },
+  "client": {
+    "protocol": "2026-07-28"
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/06-e"
+  ],
+  "steps": [
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s1"
+      }
+    },
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s2"
+      },
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-e/sh-2.cast'"
+      ]
+    },
+    {
+      "call_once": "tui_end",
+      "args": {
+        "session_id": "s1"
+      },
+      "label": "the form comes back as an input request",
+      "expect_input_required": true
+    },
+    {
+      "call_once": "tui_end",
+      "args": {
+        "session_id": "s2"
+      },
+      "label": "no second form while one is out",
+      "expect_input_required": false,
+      "expect": [
+        "Recording saved to '${REPO}/mcp-tests/auto-test/script-out/06-e/sh-2.cast'"
+      ]
+    },
+    {
+      "call_once": "tui_end",
+      "args": {
+        "session_id": "s1"
+      },
+      "request_state": "previous",
+      "label": "retry with the state, no answer",
+      "expect_input_required": false,
+      "expect": [
+        "Recording saved to '${REPO}/mcp-tests/auto-test/script-out/06-e/sh.cast'",
+        "Report '${REPO}/mcp-tests/auto-test/script-out/06-e/sh.report.jsonl'"
+      ]
+    },
+    {
+      "files": {
+        "${REPO}/mcp-tests/auto-test/script-out/06-e/sh.cast": true,
+        "${REPO}/mcp-tests/auto-test/script-out/06-e/sh-2.cast": true
+      }
+    },
+    {
+      "forms": {
+        "count": 0
+      }
+    }
+  ]
+}

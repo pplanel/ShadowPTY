@@ -1,0 +1,54 @@
+{
+  "description": "Plan 04: a client on protocol 2026-07-28 (as Claude Code) is logged once, from server/discover or the first tui_start.",
+  "server": {
+    "command": [
+      "${REPO}/target/release/shadowpty"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/04-2026-client",
+    "env": {
+      "RUST_LOG": "info"
+    },
+    "stderr_log": "${REPO}/mcp-tests/auto-test/script-out/04-2026-client/server-stderr.log"
+  },
+  "client": {
+    "name": "claude-code-like",
+    "version": "1.0",
+    "protocol": "2026-07-28",
+    "forms": true
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/04-2026-client"
+  ],
+  "steps": [
+    {
+      "label": "start a session",
+      "call": "tui_start",
+      "args": {
+        "command": "true",
+        "live": false
+      }
+    },
+    {
+      "label": "logged with what it declares",
+      "log": {
+        "contains": [
+          "Client connected: claude-code-like 1.0, protocol 2026-07-28, elicitation: form, tasks (io.modelcontextprotocol/tasks): no"
+        ]
+      }
+    },
+    {
+      "label": "end it",
+      "call": "tui_end",
+      "args": {}
+    },
+    {
+      "label": "logged once",
+      "log": {
+        "count": {
+          "pattern": "Client connected",
+          "equals": 1
+        }
+      }
+    }
+  ]
+}
