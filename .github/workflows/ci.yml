@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [ "main" ]
+  # Every pull request, including ones stacked on another branch
   pull_request:
-    branches: [ "main" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -50,6 +50,21 @@ jobs:
 
       - name: Run Tests
         run: nix develop --command cargo test --all-targets
+
+      # Same runner and target/ as the test step: the server is already built, and the example
+      # binary links from what it compiled (cargo test leaves only a hashed copy of it)
+      - name: Run MCP Scripts
+        run: |
+          nix develop --command bash -c '
+            cargo build --bin shadowpty --example mcp_script || exit 2
+            failed=0
+            for script in mcp-tests/auto-test/scripts/*.json; do
+              echo "::group::$script"
+              SHADOWPTY_BIN="$PWD/target/debug/shadowpty" target/debug/examples/mcp_script "$script" || failed=1
+              echo "::endgroup::"
+            done
+            exit $failed
+          '
 
       - name: Build Package
         run: nix build

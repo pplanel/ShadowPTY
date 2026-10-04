@@ -69,6 +69,36 @@ Expect 7 passing tests, including `test_background_form_does_not_block_start_and
 
 Optional manual check with a client on an older protocol (e.g. the MCP Inspector in a browser): call `tui_start` with only `command: "sh"` and `args: ["-c","sleep 120"]`; the result comes back at once while the form (with **Watch live**) is shown; turning on **Watch live** opens the live page in the browser; not answering for 30 s and then calling `tui_end` keeps `sh.cast` and `sh.report.jsonl`.
 
+## Scripted client (deterministic, no model)
+
+Every scenario above, plus the older-protocol background form, without Claude Code or a model: [`mcp_script`](README.md#scripted-client-deterministic-no-model) plays the client and answers each form as the script says. Build once with `cargo build --release && cargo build --release --example mcp_script`, then run each script inside its own ShadowPTY session, as in the README conventions:
+
+```json
+{
+  "command": "<repo>/target/release/examples/mcp_script",
+  "args": ["<repo>/mcp-tests/auto-test/scripts/06-a-accept-other-files.json"],
+  "rows": 43,
+  "cols": 155,
+  "session_id": "capture-form-a-script",
+  "record_path": "<repo>/mcp-tests/auto-test/capture-form-a-script-test.cast",
+  "report_path": "<repo>/mcp-tests/auto-test/capture-form-a-script-test.report.jsonl",
+  "live": false
+}
+```
+
+Then `tui_wait_exit` (`timeout_ms: 60000`), assert exit code 0 and `mcp_script: N passed, 0 failed` at the end of the output, and `tui_end`. Repeat for each script, changing `session_id` and the file names (`capture-form-b-script-test.cast`, …). Default files land in `<repo>/mcp-tests/auto-test/script-out/<scenario>/`, which each script empties first.
+
+| Script | Client | Asserts |
+| :--- | :--- | :--- |
+| `06-a-accept-other-files.json` | 2026-07-28 | Scenario A: `tui_start` returns at once with no form; `tui_end` shows the end form (four fields, no `live`); the answer moves the recording to `kept.cast` and deletes the report; the next session records to `kept-2.cast` without asking |
+| `06-b-cancel.json` | 2026-07-28 | Scenario B: closing the form keeps `sh.cast` and `sh.report.jsonl`; the hint appears on the next start only |
+| `06-c-decline.json` | 2026-07-28 | Scenario C: declining keeps both files, with no hint |
+| `06-d-explicit.json` | 2026-07-28 | Scenario D: an explicit `record_path` is used as is; no form, no default files |
+| `06-e-retry-without-answer.json` | 2026-07-28 | `tui_end` returns the form as an input request; another session ending meanwhile keeps its defaults without a second form; a retry with the request state but no answer keeps the defaults |
+| `06-f-legacy-background.json` | `initialize` | Scenario E: `tui_start` returns within 1 s while the person takes 1.5 s to answer the start form (which offers `live`); `tui_end` waits for the answer and moves the recording |
+
+Not scripted: the 30-second timeout of the background form (the server's timeout isn't configurable from a client). `tests/capture_test.rs` covers it with a short timeout.
+
 ## Assertions
 
 1. A.1: `tui_start` returns without waiting and records to the default files; no form at start.

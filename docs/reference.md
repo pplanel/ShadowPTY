@@ -482,7 +482,9 @@ cargo bench                      # criterion: emulator, render, output, pty
 nix flake check
 ```
 
-CI runs the first three on macOS and Linux.
+CI runs the first three on macOS and Linux, then every script in `mcp-tests/auto-test/scripts/` with the scripted MCP client below, against the debug build.
+
+`examples/mcp_script.rs` is a scripted MCP client for end-to-end checks without a model: `cargo build --release --example mcp_script`, then `target/release/examples/mcp_script <script.json>` (set `SHADOWPTY_BIN` to test another server binary). The scripts for the capture form and client logging are in `mcp-tests/auto-test/scripts/` (see `mcp-tests/auto-test/README.md`).
 
 Releases ship the binaries, the npm launcher and an MCPB bundle for Claude Desktop. `scripts/pack-mcpb.sh <dir> <version>` builds `dist/shadowpty.mcpb` from the `shadowpty-<target>` binaries in `<dir>` (missing targets are left out, so a local build of one platform works). The bundle is `mcpb/manifest.json` plus `mcpb/server/shadowpty`, a `sh` launcher that picks the binary for the machine and starts it in the configured working directory (or `$HOME` when the host starts it in `/`). A test keeps the manifest's tool list in sync with the server.
 

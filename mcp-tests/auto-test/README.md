@@ -85,6 +85,21 @@ Then:
 2. `tui_end` with the plan's `session_id`. The reply says `Report '<…>/<feature>-test.report.jsonl': N checks, N passed, 0 failed`.
 3. Check the report's last line is a `summary` with `"failed": 0`, and that `<feature>-test.cast` exists and replays.
 
+## Scripted client (deterministic, no model)
+
+Plans 04 and 06 can also run against `mcp_script` (`examples/mcp_script.rs`), a small MCP client that plays the client's role from a JSON script in `scripts/`: it spawns the server under test, connects with the protocol and capabilities the script declares (`initialize` or 2026-07-28, forms, Tasks), makes the tool calls, answers each form as the script says (accept with given values, decline, close, optionally after a delay), and checks the results, the forms shown, files on disk and the server's stderr. It prints a PASS/FAIL line per check and ends with `mcp_script: N passed, M failed`; the exit code is 0 only when nothing failed.
+
+```sh
+cargo build --release && cargo build --release --example mcp_script
+target/release/examples/mcp_script mcp-tests/auto-test/scripts/06-a-accept-other-files.json
+```
+
+In a plan, run it as the command of a ShadowPTY session (recording and report saved here, `live: false`), wait with `tui_wait_exit`, and check the exit code and the summary line. The script format is documented at the top of `examples/mcp_script.rs`; `${REPO}`, `${DIR}` (the script's directory) and `${SHADOWPTY}` (the server under test: `$SHADOWPTY_BIN`, or the release build) are replaced before it's read.
+
+CI runs every script on macOS and Linux after the tests (step **Run MCP Scripts**), against the debug build: `SHADOWPTY_BIN=target/debug/shadowpty target/debug/examples/mcp_script <script>`.
+
+The trade-off: the scripts are deterministic, fast and cost no model calls, so they make good regression checks, but they test the server against **rmcp's client**, not the real Claude Code. What Claude Code itself shows (its `/mcp` screens, how it renders the form, which capabilities a new version declares) still needs the Claude Code steps of each plan.
+
 ## Passing
 
 A plan passes when every assertion in its **Assertions** section holds. Record the outcome at the end of each run, in `<repo>/mcp-tests/auto-test/<feature>-result.md`: date, commit (`git rev-parse --short HEAD`), Claude Code version (`claude --version`), pass/fail per assertion, and notes for anything that didn't match.

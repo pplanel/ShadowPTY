@@ -1,0 +1,113 @@
+{
+  "description": "Plan 06 B (2026-07-28): closing the form keeps both default files; the agent gets the hint exactly once afterwards.",
+  "server": {
+    "command": [
+      "${SHADOWPTY}"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-b",
+    "env": {
+      "RUST_LOG": "info"
+    }
+  },
+  "client": {
+    "protocol": "2026-07-28"
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/06-b"
+  ],
+  "answers": [
+    "cancel"
+  ],
+  "steps": [
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s1"
+      }
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s1"
+      },
+      "label": "close the form",
+      "expect": [
+        "Recording saved to '${REPO}/mcp-tests/auto-test/script-out/06-b/sh.cast'",
+        "Report '${REPO}/mcp-tests/auto-test/script-out/06-b/sh.report.jsonl'"
+      ],
+      "expect_form": {
+        "shown": true
+      }
+    },
+    {
+      "files": {
+        "${REPO}/mcp-tests/auto-test/script-out/06-b/sh.cast": true,
+        "${REPO}/mcp-tests/auto-test/script-out/06-b/sh.report.jsonl": true
+      }
+    },
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s2"
+      },
+      "label": "defaults from the start, with the hint",
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-b/sh-2.cast'",
+        "reporting to '${REPO}/mcp-tests/auto-test/script-out/06-b/sh-2.report.jsonl'",
+        "These are the default files.",
+        "Ask the person whether they want"
+      ]
+    },
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo capture-check; sleep 60"
+        ],
+        "session_id": "s3"
+      },
+      "label": "no hint the second time",
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-b/sh-3.cast'"
+      ],
+      "expect_not": [
+        "Ask the person whether they want"
+      ]
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s2"
+      },
+      "expect_form": {
+        "shown": false
+      }
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s3"
+      },
+      "expect_form": {
+        "shown": false
+      }
+    },
+    {
+      "forms": {
+        "count": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "description": "Plan 06 D: a tui_start that sets a capture field is captured exactly as asked and never involves the person.",
+  "server": {
+    "command": [
+      "${SHADOWPTY}"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/06-d",
+    "env": {
+      "RUST_LOG": "info"
+    }
+  },
+  "client": {
+    "protocol": "2026-07-28"
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/06-d"
+  ],
+  "steps": [
+    {
+      "call": "tui_start",
+      "args": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "sleep 60"
+        ],
+        "session_id": "s1",
+        "record_path": "${REPO}/mcp-tests/auto-test/script-out/06-d/explicit.cast"
+      },
+      "label": "explicit record_path",
+      "expect": [
+        "recording to '${REPO}/mcp-tests/auto-test/script-out/06-d/explicit.cast'"
+      ],
+      "expect_not": [
+        "reporting to",
+        "When this session ends"
+      ],
+      "expect_form": {
+        "shown": false
+      }
+    },
+    {
+      "call": "tui_end",
+      "args": {
+        "session_id": "s1"
+      },
+      "expect_not": [
+        "Recording saved"
+      ],
+      "expect_form": {
+        "shown": false
+      }
+    },
+    {
+      "files": {
+        "${REPO}/mcp-tests/auto-test/script-out/06-d/explicit.cast": true,
+        "${REPO}/mcp-tests/auto-test/script-out/06-d/sh.cast": false,
+        "${REPO}/mcp-tests/auto-test/script-out/06-d/sh.report.jsonl": false
+      }
+    },
+    {
+      "forms": {
+        "count": 0
+      }
+    }
+  ]
+}

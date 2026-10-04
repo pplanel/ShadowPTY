@@ -44,6 +44,33 @@ Run the step B pipeline again with `2>/dev/null` and stdout to `client-logging-s
 
 `!cd <repo> && cargo test --lib client_log` passes.
 
+## Scripted client (deterministic, no model)
+
+The same checks without Claude Code or a model: [`mcp_script`](README.md#scripted-client-deterministic-no-model) plays the client, declaring exactly the name, protocol and capabilities in the script. Build once with `cargo build --release && cargo build --release --example mcp_script`, then run each script inside its own ShadowPTY session, as in the README conventions:
+
+```json
+{
+  "command": "<repo>/target/release/examples/mcp_script",
+  "args": ["<repo>/mcp-tests/auto-test/scripts/04-legacy-client.json"],
+  "rows": 43,
+  "cols": 155,
+  "session_id": "client-logging-script",
+  "record_path": "<repo>/mcp-tests/auto-test/client-logging-script-test.cast",
+  "report_path": "<repo>/mcp-tests/auto-test/client-logging-script-test.report.jsonl",
+  "live": false
+}
+```
+
+Then `tui_wait_exit` (`timeout_ms: 60000`) and assert it exited with code 0 and the output ends with `mcp_script: N passed, 0 failed`. Repeat with `04-2026-client.json` and `04-tasks-client.json` (change `session_id` and the file names: `client-logging-2026-script-test.cast`, …), then `tui_end`.
+
+| Script | Asserts |
+| :--- | :--- |
+| `04-legacy-client.json` | `initialize` client: `Client connected: legacy-check 9.9, protocol 2025-11-25, elicitation: form, tasks (io.modelcontextprotocol/tasks): no, extensions: none`; logged once after more requests |
+| `04-2026-client.json` | 2026-07-28 client (as Claude Code): `… protocol 2026-07-28, elicitation: form, tasks (…): no`; logged once |
+| `04-tasks-client.json` | A client declaring the Tasks extension and no forms: `elicitation: no, tasks (…): yes, extensions: io.modelcontextprotocol/tasks` |
+
+The scripts read the server's stderr from `script-out/<script>/server-stderr.log`.
+
 ## Assertions
 
 1. A.3 prints one line starting `Client connected: claude-code <claude --version>, protocol 2026-07-28, elicitation: form and url, tasks (io.modelcontextprotocol/tasks): no` (with Claude Code 2.1.288; record what a newer version declares, especially `tasks`).

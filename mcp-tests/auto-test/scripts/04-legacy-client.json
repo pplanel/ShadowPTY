@@ -1,0 +1,46 @@
+{
+  "description": "Plan 04: a client on the legacy initialize handshake is logged once, with what it declares.",
+  "server": {
+    "command": [
+      "${SHADOWPTY}"
+    ],
+    "cwd": "${REPO}/mcp-tests/auto-test/script-out/04-legacy-client",
+    "env": {
+      "RUST_LOG": "info"
+    },
+    "stderr_log": "${REPO}/mcp-tests/auto-test/script-out/04-legacy-client/server-stderr.log"
+  },
+  "client": {
+    "name": "legacy-check",
+    "version": "9.9",
+    "protocol": "legacy",
+    "forms": true
+  },
+  "clean": [
+    "${REPO}/mcp-tests/auto-test/script-out/04-legacy-client"
+  ],
+  "steps": [
+    {
+      "label": "logged at initialize",
+      "log": {
+        "contains": [
+          "Client connected: legacy-check 9.9, protocol 2025-11-25, elicitation: form, tasks (io.modelcontextprotocol/tasks): no, extensions: none"
+        ]
+      }
+    },
+    {
+      "label": "another request",
+      "call": "tui_list_sessions",
+      "args": {}
+    },
+    {
+      "label": "logged once",
+      "log": {
+        "count": {
+          "pattern": "Client connected",
+          "equals": 1
+        }
+      }
+    }
+  ]
+}
