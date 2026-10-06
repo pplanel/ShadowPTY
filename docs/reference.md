@@ -106,10 +106,10 @@ Sends text and key tokens.
 
 | Tokens | |
 | :--- | :--- |
-| Keys | `<ENTER>` `<RETURN>` `<ESC>` `<ESCAPE>` `<TAB>` `<SPACE>` `<BACKSPACE>` `<DELETE>` |
+| Keys | `<ENTER>` `<RETURN>` `<ESC>` `<ESCAPE>` `<TAB>` `<SPACE>` `<BACKSPACE>` `<DELETE>` `<DEL>` `<INSERT>` `<INS>` `<SHIFT+TAB>` `<S-TAB>` `<BACKTAB>` |
 | Navigation | `<UP>` `<DOWN>` `<LEFT>` `<RIGHT>` `<HOME>` `<END>` `<PAGEUP>` `<PAGEDOWN>` |
 | Function keys | `<F1>` … `<F12>` |
-| Modifiers | `<CTRL+C>` / `<C-C>`, `<ALT+X>` / `<M-X>` |
+| Modifiers | `<CTRL+C>` / `<C-C>`, `<CTRL+\>` / `<C-\>`, `<CTRL+]>`, `<CTRL+SPACE>`, `<CTRL+@>`, `<CTRL+?>`, `<ALT+X>` / `<M-X>` |
 
 ### `tui_paste`
 

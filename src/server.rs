@@ -804,7 +804,7 @@ impl ShadowPtyServer {
             idempotent_hint = false,
             open_world_hint = true
         ),
-        description = "Sends keystrokes to the running TUI application. Supports tokens like <ENTER>, <ESC>, <UP>, <DOWN>, <CTRL+C>, etc."
+        description = "Sends keystrokes to the running TUI application. Supports tokens like <ENTER>, <ESC>, <UP>, <DOWN>, <CTRL+C>, <SHIFT+TAB>, <INSERT>, etc."
     )]
     pub async fn tui_input(
         &self,

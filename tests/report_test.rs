@@ -191,7 +191,7 @@ async fn test_report_logs_inputs_checks_exit_and_summary() {
 
     // Valid line by line while the session is still running, with no summary yet
     let entries = read_report(&path);
-    assert!(of_type(&entries, "summary").is_empty());
+    assert_eq!(of_type(&entries, "summary"), [] as [&serde_json::Value; 0]);
     assert_start_and_inputs(&entries);
     assert_checks(&entries);
     let last_check_at = of_type(&entries, "run_script")[0]["at_ms"].as_u64();
