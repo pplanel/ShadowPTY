@@ -70,7 +70,15 @@ After Phase 1; see [ROADMAP](./ROADMAP.md#session-report-json).
 - [x] Session report `signal` entry (not a check).
 - [x] Crash signals `TRAP`, `BUS`, `FPE` alongside `ABRT` and `SEGV`.
 
-- [ ] 2.2 Key tokens: `<SHIFT+TAB>`, `<INSERT>`, `<CTRL+\>` / `<CTRL+]>` and other non-letter controls (only `CTRL+<letter>` works today); audit `rust-expect`'s `send_*` list against `input.rs`.
+### 2.2 Key tokens `[x]`
+- [x] Audit `rust-expect` 0.6.1's `send_*` methods, `AnsiSequences`, and `ControlChar` against `input.rs`.
+- [x] `<SHIFT+TAB>`, `<SHIFT-TAB>`, `<S-TAB>`, `<BACKTAB>` -> `\x1b[Z`.
+- [x] `<INSERT>`, `<INS>` -> `\x1b[2~`.
+- [x] `<DEL>` alias for `<DELETE>` -> `\x1b[3~`.
+- [x] Control codes for non-letters: `<CTRL+\>` / `<C-\>` (`0x1C`), `<CTRL+]>` / `<C-]>` (`0x1D`), `<CTRL+^>` / `<C-^>` (`0x1E`), `<CTRL+_>` / `<C-_>` (`0x1F`), `<CTRL+@>` / `<C-@>` (`0x00`), `<CTRL+SPACE>` / `<C-SPACE>` (`0x00`), `<CTRL+[>` / `<C-[>` (`0x1B`), `<CTRL+?>` / `<C-?>` (`0x7F`).
+- [x] Tests: unit tests in `src/input.rs`, real PTY integration test in `tests/integration_test.rs` (43×155).
+- [x] Docs: reference (`tui_input` tokens table), `server.rs` tool description.
+
 - [ ] 2.3 `tui_input` `line_ending` (`cr`, `lf`, `crlf`).
 - [ ] 2.4 `tui_input` `delay_ms` (+ optional jitter) for human-like typing; recording shows real timing.
 

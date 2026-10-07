@@ -717,7 +717,7 @@ mod tests {
         screen.cells[3].text = "▄".to_string();
 
         let png_bytes = render_png_default(&screen).expect("valid png");
-        assert!(!png_bytes.is_empty());
+        assert_ne!(png_bytes, [] as [u8; 0]);
     }
 
     #[test]

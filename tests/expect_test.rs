@@ -249,7 +249,7 @@ async fn test_run_script_stops_when_prompt_is_missing() {
         .await
         .expect("run script");
 
-    assert!(outcome.steps.is_empty());
+    assert_eq!(outcome.steps, [] as [shadowpty::pty_manager::ScriptStep; 0]);
     let error = outcome.error.expect("script stops");
     assert!(error.starts_with("command 1 ('echo hi')"), "{error}");
     assert!(

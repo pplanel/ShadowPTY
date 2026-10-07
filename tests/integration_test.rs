@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use shadowpty::pty_manager::{PtyConfig, PtyManager};
+use shadowpty::output::Pattern;
+use shadowpty::pty_manager::{ExpectTarget, Expectation, PtyConfig, PtyManager};
 use std::time::Duration;
 
 #[tokio::test]
@@ -35,6 +36,47 @@ async fn test_interactive_pty_session() {
 
     // Send exit
     manager.send_input("exit<ENTER>").await.expect("send exit");
+}
+
+#[tokio::test]
+async fn test_key_tokens_in_pty() {
+    let manager = PtyManager::new();
+    let args = vec![
+        "-c".to_string(),
+        "stty -isig 2>/dev/null; cat -v".to_string(),
+    ];
+    let config = PtyConfig::new("sh", &args, 43, 155);
+    manager.start_app(&config).await.expect("start cat");
+
+    manager
+        .send_input("<SHIFT+TAB><INSERT><CTRL+]><CTRL+SPACE>")
+        .await
+        .expect("send tokens");
+
+    manager
+        .expect(&Expectation {
+            patterns: vec![Pattern::literal("^[[Z^[[2~^]^@").unwrap()],
+            target: ExpectTarget::Stream,
+            timeout: Duration::from_secs(5),
+        })
+        .await
+        .expect("expect parsed tokens");
+
+    manager
+        .send_input("<CTRL+\\><DEL><S-TAB>")
+        .await
+        .expect("send more tokens");
+
+    manager
+        .expect(&Expectation {
+            patterns: vec![Pattern::literal("^\\^[[3~^[[Z").unwrap()],
+            target: ExpectTarget::Stream,
+            timeout: Duration::from_secs(5),
+        })
+        .await
+        .expect("expect remaining tokens");
+
+    manager.stop_app().await.expect("stop");
 }
 
 #[tokio::test]
